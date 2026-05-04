@@ -1,6 +1,7 @@
-num_runs: 100
-models: ["MLP", "Ph", "GP", "GP+Ph"]
+num_runs: 1
+models: ["MLP","GP", "GP+Ph", "Ph"]
 property_name: 'FE (Eth)'
+run_name: gas_test
 EI_reference: "max"
 num_iter: 101
 normalize_inputs: True
