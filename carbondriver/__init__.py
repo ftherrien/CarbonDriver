@@ -1,6 +1,6 @@
 from .models import PhModel, MLPModel, MultitaskGPModel, BoTorchGP, MultitaskGPhysModel
 from .train import train_model_ens, train_GP_model, train_GP_Ph_model
-from .loaders import feature_stats
+from .loaders import feature_stats, default_input_labels, default_output_labels
 from .config import default_config
 import pandas as pd
 import torch
@@ -72,6 +72,7 @@ class GDEOptimizer:
         self.output_dir = output_dir
 
         self.config = default_config | config
+        dataset = self.config.get("dataset", "gas")
 
         self.maximize = maximize
 
@@ -84,19 +85,13 @@ class GDEOptimizer:
         self._bounds = bounds
 
         if input_labels is None:
-            self.input_labels = [
-                "AgCu Ratio",
-                "Naf vol (ul)",
-                "Sust vol (ul)",
-                "Zero_eps_thickness",
-                "Catalyst mass loading",
-            ]
+            self.input_labels = default_input_labels(dataset)
         else:
             # If input_labels are provided, use them
             self.input_labels = input_labels
 
         if output_labels is None:
-            self.output_labels = ["FE (Eth)", "FE (CO)"]
+            self.output_labels = default_output_labels(dataset)
         else:
             # If output_labels are provided, use them
             self.output_labels = output_labels
@@ -206,9 +201,17 @@ class GDEOptimizer:
         """
         X, y = self._get_data_tensors(update_stats=True)
 
-        # Direct access to precomputed stats for PhModel
-        mu = float(self._means["Zero_eps_thickness"])
-        sigma = float(self._stds["Zero_eps_thickness"])
+        mu = None
+        sigma = None
+        zlt_index = None
+        if self.model in (PhModel, MultitaskGPhysModel):
+            if "Zero_eps_thickness" not in self._means.index:
+                raise ValueError(
+                    "Zero_eps_thickness must be present in input_labels for PhModel-based models."
+                )
+            mu = float(self._means["Zero_eps_thickness"])
+            sigma = float(self._stds["Zero_eps_thickness"])
+            zlt_index = self.input_labels.index("Zero_eps_thickness")
 
         # Special handling for GP and GP+Ph models: these use gpytorch training functions
         # (they are not compatible with the ensemble training pipeline used for MLP/Ph).
@@ -232,6 +235,8 @@ class GDEOptimizer:
                 zlt_sigma=sigma,
                 current_target=233,
                 config=self.config,
+                n_inputs=len(self.input_labels),
+                zlt_index=zlt_index,
             )
 
             # Train GP+Ph and return BoTorch-compatible model
@@ -255,6 +260,8 @@ class GDEOptimizer:
                     current_target=233,
                     config=self.config,
                     dropout=0.0,
+                    n_inputs=len(self.input_labels),
+                    zlt_index=zlt_index,
                 )
 
             elif self.model == MLPModel:
