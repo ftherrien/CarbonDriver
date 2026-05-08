@@ -26,24 +26,25 @@ GAS_FILE_COLUMNS = [
 ] + GAS_OUTPUT_COLUMNS
 
 BICARB_INPUT_COLUMNS = [
-    "IPA volume",
+    # Constant in current dataset (nunique <= 1)
+    # "IPA volume",
     "Zero_eps_thickness",
     "Ag weight",
     "Nafion 5 wt% weight",
     "PTFE weight",
-    "Air flow rate",
+    # "Air flow rate",
     "Combustion temperaure",
-    "Spray height",
-    "Spray length",
-    "Spray flow rate",
-    "# passes",
-    "# lines",
+    # "Spray height",
+    # "Spray length",
+    # "Spray flow rate",
+    # "# passes",
+    # "# lines",
     "Current density",
-    "Bicarb concentration",
+    # "Bicarb concentration",
     "Bicarb flow rate",
-    "Bicarb temperature",
-    "KOH concentration",
-    "KOH flow rate",
+    # "Bicarb temperature",
+    # "KOH concentration",
+    # "KOH flow rate",
 ]
 BICARB_OUTPUT_COLUMNS = ["FE_CO", "CO2 utilization"]
 
