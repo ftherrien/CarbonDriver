@@ -79,6 +79,7 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
     expected_improvements = [None] * len(chosen_triplets_ids)
     nll_values = [None] * len(chosen_triplets_ids)  # NLL from training
     loss_values = [None] * len(chosen_triplets_ids)  # Loss (MSE proxy) from training
+    mae_values = [None] * len(chosen_triplets_ids)  # Mean absolute error from training
     # Get rows for chosen triplets
     train_df = df[df['triplet'].isin(chosen_triplets_ids)].copy()
     # Get rows for withheld triplets
@@ -100,6 +101,7 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
         expected_improvements.append(float(best_ei))
         nll_values.append(metrics.get('nll', None))
         loss_values.append(metrics.get('loss', None))
+        mae_values.append(metrics.get('mae', None))
         chosen_triplets_ids.append(int(best_triplet.name))
 
         current_best = df_triplet_means.loc[chosen_triplets_ids][config["property_name"]].max().item()
@@ -114,7 +116,8 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
         'chosen_triplets': chosen_triplets_ids,
         'expected_improvements': expected_improvements,
         'nll': nll_values,
-        'loss': loss_values
+        'loss': loss_values,
+        'mae': mae_values,
     })
     results_df.to_csv(run_dir / 'chosen_triplets.csv')
     print(f"  Results saved to {run_dir / 'chosen_triplets.csv'}")
@@ -278,9 +281,12 @@ if __name__ == '__main__':
     all_data = []
 
     combined_csv = OUTPUT_BASE / 'all_runs_combined.csv'
+    rebuild_combined = bool(config.get("rebuild_all_runs_combined", False))
 
-    if not combined_csv.exists():
-    
+    if rebuild_combined or not combined_csv.exists():
+        if rebuild_combined and combined_csv.exists():
+            print("  Rebuilding combined data (rebuild_all_runs_combined=True)...")
+
         for i, model_name in enumerate(config["models"]):
             print(f"  Processing subplot for {model_name}...")
             _df = process_runs_mean(model_name)
@@ -290,7 +296,7 @@ if __name__ == '__main__':
         
         all_df = pd.concat(all_data, axis=0)
         
-        all_df.to_csv(OUTPUT_BASE / 'all_runs_combined.csv', index=False)
+        all_df.to_csv(combined_csv, index=False)
 
     else:
 
@@ -383,7 +389,7 @@ if __name__ == '__main__':
             hue='model',
             errorbar='sd'
         )
-        plt.ylabel('Loss (Neg. Marginal Log-Likelihood for GP)')
+        plt.ylabel('Training loss')
         plt.xlabel('Step')
         plt.title('Training Loss vs Active Learning Step')
         plt.legend(title='Model', bbox_to_anchor=(1.05, 1), loc='upper left')
@@ -406,22 +412,24 @@ if __name__ == '__main__':
         print(f"\n{model_name.upper()}:")
         steps_to_finish = []
         final_nlls = []
-        final_losses = []
+        final_maes = []
 
         df_model = all_df.loc[all_df["model"]==model_name]
         
         for run in df_model['dname'].unique():
             chosen_df = df_model[df_model['dname'] == run]
             
-            # Collect final NLL and loss values (last non-null).
-            # Simplified: try to append the last non-NaN value for each column,
-            # skip silently if the column is missing or contains only NaNs.
-            for col, storage in (('nll', final_nlls), ('loss', final_losses)):
-                try:
-                    storage.append(chosen_df[col].dropna().iat[-1])
-                except Exception:
-                    # missing column or all-NaN -> skip
-                    pass
+            # Collect final NLL value (last non-NaN).
+            try:
+                final_nlls.append(chosen_df['nll'].dropna().iat[-1])
+            except Exception:
+                # missing column or all-NaN -> skip
+                pass
+
+            try:
+                final_maes.append(chosen_df['mae'].dropna().iat[-1])
+            except Exception:
+                pass
             
             # Find step where cummax FE becomes max
             filtered = chosen_df[chosen_df['cummax FE'] >= df_triplet_means.loc[best_id, config["property_name"]]]
@@ -443,10 +451,10 @@ if __name__ == '__main__':
             print(f"  Runs analyzed: {len(df_model['dname'].unique())}")
             print(f"  Mean steps to max FE: {mean_steps:.2f} ± {std_steps:.2f}")
             stats[model_name] = {"Mean Steps": mean_steps, "Std Steps": std_steps, "Acceleration Factor": accel_factor} 
-            if final_losses:
-                print(f"  Final MSE (loss): {np.mean(final_losses):.4f} ± {np.std(final_losses):.4f}")
-                stats[model_name]["Final MSE mean"] = np.mean(final_losses)
-                stats[model_name]["Final MSE std"] = np.std(final_losses)
+            if final_maes:
+                print(f"  Final MAE: {np.mean(final_maes):.4f} ± {np.std(final_maes):.4f}")
+                stats[model_name]["Final MAE mean"] = np.mean(final_maes)
+                stats[model_name]["Final MAE std"] = np.std(final_maes)
             if final_nlls:
                 print(f"  Final NLL: {np.mean(final_nlls):.4f} ± {np.std(final_nlls):.4f}")
                 stats[model_name]["Final NLL mean"] = np.mean(final_nlls)

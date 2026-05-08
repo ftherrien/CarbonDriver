@@ -66,7 +66,7 @@ class GDEOptimizer:
                 )
         else:
             raise ValueError(
-                f"Only {' and '.join(SUPORTED_AFs)} are supported for now."
+                f"Only {' and '.join(SUPPORTED_AFs)} are supported for now."
             )
 
         self.output_dir = output_dir
@@ -282,6 +282,28 @@ class GDEOptimizer:
                 num_iter=self.config["num_iter"],
                 plot=self.config["make_plots"],
             )
+
+        # Compute a simple training-set MAE for reporting. This is a summary
+        # metric only; it does not affect acquisition.
+        with torch.no_grad():
+            if self.model in (MultitaskGPModel, MultitaskGPhysModel):
+                if self.model == MultitaskGPModel:
+                    model.eval()
+                    likelihood.eval()
+                    mean_predictions = likelihood(model(X)).mean
+                else:
+                    model.eval()
+                    likelihood.eval()
+                    mean_predictions = likelihood(model(X)).mean
+            else:
+                model.eval()
+                mean_predictions = model(X)
+
+            mae = torch.mean(torch.abs(mean_predictions - y)).item()
+
+        if "mae" not in stats.columns:
+            stats["mae"] = np.nan
+        stats.loc[stats.index.max(), "mae"] = mae
 
         return model, stats
 
@@ -556,6 +578,15 @@ class GDEOptimizer:
                 metrics["loss"] = np.nan
         else:
             metrics["loss"] = np.nan
+
+        if "mae" in stats.columns:
+            mae_vals = stats["mae"].dropna()
+            if len(mae_vals) > 0:
+                metrics["mae"] = float(mae_vals.iloc[-1])
+            else:
+                metrics["mae"] = np.nan
+        else:
+            metrics["mae"] = np.nan
 
         if return_metrics:
             return best_ei, best_idx, metrics

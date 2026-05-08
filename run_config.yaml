@@ -8,3 +8,4 @@ normalize_inputs: True
 normalize_outputs: False
 torch_seed: 0
 use_existing_results: False
+rebuild_all_runs_combined: True
