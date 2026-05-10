@@ -1,3 +1,4 @@
+data_file: Characterization_data.xlsx
 num_runs: 1
 models: ["MLP","GP", "GP+Ph", "Ph"]
 property_name: 'FE (Eth)'

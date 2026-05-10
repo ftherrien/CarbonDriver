@@ -20,6 +20,7 @@ import torch
 import yaml
 import sys
 
+
 def choose_base_inds_numpy(y: np.ndarray, num_choose: int, how: Literal['max','min'] = 'max', strategy: Literal['uniform','skewed'] = 'uniform', seed: Optional[int] = None):
     ind = np.argsort(y)
     N = y.shape[0]
@@ -219,10 +220,16 @@ if __name__ == '__main__':
     # Load data once
     print("[2/6] Loading experimental data...")
     dataset = config.get("dataset", "gas")
+    data_file = config.get("data_file", None)
+    if data_file is not None:
+        p = Path(data_file)
+        if not p.is_absolute():
+            p = Path(__file__).resolve().parent / p
+        data_file = p
     if dataset == "bicarb":
-        df = load_bicarb_data()
+        df = load_bicarb_data(filepath=data_file)
     elif dataset == "gas":
-        df = load_gas_data()
+        df = load_gas_data(file=data_file)
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
     

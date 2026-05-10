@@ -8,3 +8,4 @@ gpytorch
 botorch
 rich
 openpyxl
+pyyaml
