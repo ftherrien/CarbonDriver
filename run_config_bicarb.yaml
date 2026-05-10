@@ -1,3 +1,4 @@
+data_file: Bicarb_characterization_data.xlsx
 run_name: bicarb_test_results
 dataset: bicarb
 num_runs: 1
