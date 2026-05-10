@@ -19,6 +19,7 @@ from typing import Tuple, Optional, Literal
 import torch
 import yaml
 import sys
+import argparse
 
 
 def choose_base_inds_numpy(y: np.ndarray, num_choose: int, how: Literal['max','min'] = 'max', strategy: Literal['uniform','skewed'] = 'uniform', seed: Optional[int] = None):
@@ -205,13 +206,39 @@ def create_random_baseline(n_runs):
 
 if __name__ == '__main__':
 
+    parser = argparse.ArgumentParser(description="Active learning experiment suite")
+    parser.add_argument("config", help="Path to YAML config file")
+    parser.add_argument("--model", default=None,
+                        help="Run only this model's experiments (e.g. 'GP', 'MLP')")
+    parser.add_argument("--plot-only", action="store_true",
+                        help="Skip experiments, only regenerate plots from existing results")
+    parser.add_argument("--no-plot", action="store_true",
+                        help="Run experiments but skip plotting/summary")
+    parser.add_argument("--num-runs", type=int, default=None,
+                        help="Override num_runs from config (e.g. 50)")
+    args = parser.parse_args()
+
     print("="*70)
     print("ACTIVE LEARNING EXPERIMENT SUITE")
     print("="*70)
     
     print("\n[1/6] Loading configuration...")
-    with open(sys.argv[1]) as f:
+    with open(args.config) as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
+
+    if args.model:
+        if args.model not in config["models"]:
+            raise ValueError(f"Unknown model '{args.model}'. Available: {config['models']}")
+        config["models"] = [args.model]
+        print(f"  Filtered to model: {args.model}")
+
+    if args.num_runs is not None:
+        config["num_runs"] = args.num_runs
+        print(f"  Overriding num_runs: {args.num_runs}")
+
+    if args.plot_only:
+        config["use_existing_results"] = True
+        print("  --plot-only: skipping experiments, generating plots only")
     
     OUTPUT_BASE = Path(config["run_name"])
     print(f"  Output directory: {OUTPUT_BASE}")
@@ -258,7 +285,6 @@ if __name__ == '__main__':
         torch.manual_seed(config["torch_seed"])
         print(f"  Set torch seed to {config['torch_seed']}")
         
-        # Run experiments for all models
         total_runs = len(config["models"]) * len(list(config.get("runs", range(config["num_runs"]))))
         run_num = 0
         
@@ -280,6 +306,13 @@ if __name__ == '__main__':
     else:
         print("\n[3/6] Using existing results (use_existing_results=True)")
     
+    if args.no_plot:
+        print("\n  --no-plot: skipping plots and summary statistics.")
+        print("="*70)
+        print("✓ Experiments complete (no plotting).")
+        print("="*70 + "\n")
+        sys.exit(0)
+
     # ========================================================================
     # Plot 1: 2x2 grid - one subplot per model
     # ========================================================================
