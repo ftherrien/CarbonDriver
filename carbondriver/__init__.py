@@ -285,7 +285,8 @@ class GDEOptimizer:
 
         # Compute a simple training-set MAE for reporting. This is a summary
         # metric only; it does not affect acquisition.
-        with torch.no_grad():
+        with torch.no_grad(), warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=gpytorch.utils.warnings.GPInputWarning)
             if self.model in (MultitaskGPModel, MultitaskGPhysModel):
                 if self.model == MultitaskGPModel:
                     model.eval()
