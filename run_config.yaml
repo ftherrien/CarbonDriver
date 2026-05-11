@@ -2,8 +2,8 @@ data_file: Characterization_data.xlsx
 num_runs: 1
 models: ["MLP","GP", "GP+Ph", "Ph"]
 property_name: 'FE (Eth)'
-run_name: gas_test
-EI_reference: "max"
+run_name: ../ada_narval/CO2-catalysis/all_min_MLP_Ph_GP_GP+Ph_results
+EI_reference: "min"
 num_iter: 101
 normalize_inputs: True
 normalize_outputs: False

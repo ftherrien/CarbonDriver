@@ -244,6 +244,8 @@ if __name__ == '__main__':
     print(f"  Output directory: {OUTPUT_BASE}")
     OUTPUT_BASE.mkdir(exist_ok=True)
 
+    k_step = config.get('k_step', 9)
+    
     # Load data once
     print("[2/6] Loading experimental data...")
     dataset = config.get("dataset", "gas")
@@ -343,7 +345,7 @@ if __name__ == '__main__':
         print(f"  Loading combined data from {combined_csv}...")
         all_df = pd.read_csv(combined_csv)
 
-    baseline_df = create_random_baseline(n_runs=config["num_runs"])
+    baseline_df = create_random_baseline(n_runs=config["num_runs"]*100)
 
     all_df_baseline = pd.concat([all_df, baseline_df], axis=0)
         
@@ -374,7 +376,7 @@ if __name__ == '__main__':
     # ========================================================================
     print("\n[5/6] Generating combined model comparison plot...")
     
-    plt.figure(figsize=(8, 8))
+    plt.figure(figsize=(5, 5))
     sns.lineplot(
         data=all_df_baseline, 
         x='step', 
@@ -383,6 +385,7 @@ if __name__ == '__main__':
         marker='o', 
         ms=5
     )
+    plt.axvline(x=k_step, color='gray', linestyle='--')
     plt.ylabel('Cumulative max FE (Eth)')
     plt.xlabel('Step')
     plt.legend(title='Model', loc='lower right')
@@ -448,13 +451,13 @@ if __name__ == '__main__':
 
     stats = dict()
     
-    for model_name in config["models"]:
+    for model_name in all_df_baseline["model"].unique():
         print(f"\n{model_name.upper()}:")
         steps_to_finish = []
         final_nlls = []
         final_maes = []
 
-        df_model = all_df.loc[all_df["model"]==model_name]
+        df_model = all_df_baseline.loc[all_df_baseline["model"]==model_name]
         
         for run in df_model['dname'].unique():
             chosen_df = df_model[df_model['dname'] == run]
@@ -472,34 +475,42 @@ if __name__ == '__main__':
                 pass
             
             # Find step where cummax FE becomes max
-            filtered = chosen_df[chosen_df['cummax FE'] >= df_triplet_means.loc[best_id, config["property_name"]]]
+            filtered = chosen_df[chosen_df['cummax FE'] >= df_triplet_means.loc[best_id, config["property_name"]] - 1e-8]
             if not filtered.empty:
                 # First step where threshold was crossed
                 step_to_max = filtered['step'].iloc[0]
                 # Record steps to finish
+                if step_to_max == 0:
+                    print(f"    Run {run} started at max FE (step 0).")
                 steps_to_finish.append(step_to_max)
             else:
                 print(f"    Run {run} did not reach the target FE threshold.")
+
+            val_at_kstep.append(chosen_df[chosen_df['step'] == k_step]['cummax FE'])
+            
                 
         if steps_to_finish:
             sf = np.array(steps_to_finish)
             sf[sf < 0] = 0
             mean_steps = np.mean(sf)
             std_steps = np.std(sf)
-            accel_factor = ((len(df_triplet_means)-3+1)/2) / mean_steps if mean_steps > 0 else np.inf
+            accel_factor = ((len(df_triplet_means)+1)/2-3) / mean_steps if mean_steps > 0 else np.inf
             
             print(f"  Runs analyzed: {len(df_model['dname'].unique())}")
             print(f"  Mean steps to max FE: {mean_steps:.2f} ± {std_steps:.2f}")
-            stats[model_name] = {"Mean Steps": mean_steps, "Std Steps": std_steps, "Acceleration Factor": accel_factor} 
+
+             stats[model_name] = {"Mean Steps": mean_steps, "Std Steps": std_steps, "Acceleration Factor": accel_factor, "Val at step k": np.mean(val_at_kstep), "Val at step k std": np.std(val_at_kstep)}
             if final_maes:
                 print(f"  Final MAE: {np.mean(final_maes):.4f} ± {np.std(final_maes):.4f}")
                 stats[model_name]["Final MAE mean"] = np.mean(final_maes)
                 stats[model_name]["Final MAE std"] = np.std(final_maes)
+
             if final_nlls:
                 print(f"  Final NLL: {np.mean(final_nlls):.4f} ± {np.std(final_nlls):.4f}")
                 stats[model_name]["Final NLL mean"] = np.mean(final_nlls)
                 stats[model_name]["Final NLL std"] = np.std(final_nlls)
             print(f"  Acceleration factor: {accel_factor:.2f}x")
+            print(f"  FE at step {k_step}: {np.mean(val_at_kstep):.4f} ± {np.std(val_at_kstep):.4f}")
             
         else:
             print(f"  No data available for {model_name}") 
