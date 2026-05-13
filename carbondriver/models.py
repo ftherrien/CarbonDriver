@@ -1,4 +1,4 @@
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, Literal
 import torch
 import gpytorch
 from carbondriver import gde_multi
@@ -34,6 +34,7 @@ class PhModel(torch.nn.Module):
         n_inputs: int = 5,
         zlt_index: int = 3,
         config: Optional[Dict[str, Any]] = None,
+        system_phase: Literal["gas", "liquid"] = "gas",
     ) -> None:
         """
         :param zlt_mu: mean of Zero_eps_thickness for normalization
@@ -44,6 +45,7 @@ class PhModel(torch.nn.Module):
         :param n_inputs: number of input features
         :param zlt_index: index of Zero_eps_thickness in the input vector
         :param config: configuration dict with 'normalize_inputs' flag
+        :param system_phase: phase of the electrochemical system ('gas' or 'liquid')
         """
         super().__init__()
         if n_inputs < 1:
@@ -78,6 +80,7 @@ class PhModel(torch.nn.Module):
             electrode_reaction_kinetics=erc,
             electrode_reaction_potentials=gde_multi.electrode_reaction_potentials,
             chemical_reaction_rates=gde_multi.chemical_reaction_rates,
+            system_phase=system_phase,
         )
         self.softmax = torch.nn.Softmax(dim=1)
         # zero-eps thickness normalization stats

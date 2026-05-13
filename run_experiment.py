@@ -456,6 +456,7 @@ if __name__ == '__main__':
         steps_to_finish = []
         final_nlls = []
         final_maes = []
+        val_at_kstep = []
 
         df_model = all_df_baseline.loc[all_df_baseline["model"]==model_name]
         
@@ -499,7 +500,7 @@ if __name__ == '__main__':
             print(f"  Runs analyzed: {len(df_model['dname'].unique())}")
             print(f"  Mean steps to max FE: {mean_steps:.2f} ± {std_steps:.2f}")
 
-             stats[model_name] = {"Mean Steps": mean_steps, "Std Steps": std_steps, "Acceleration Factor": accel_factor, "Val at step k": np.mean(val_at_kstep), "Val at step k std": np.std(val_at_kstep)}
+            stats[model_name] = {"Mean Steps": mean_steps, "Std Steps": std_steps, "Acceleration Factor": accel_factor, "Val at step k": np.mean(val_at_kstep), "Val at step k std": np.std(val_at_kstep)}
             if final_maes:
                 print(f"  Final MAE: {np.mean(final_maes):.4f} ± {np.std(final_maes):.4f}")
                 stats[model_name]["Final MAE mean"] = np.mean(final_maes)

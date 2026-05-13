@@ -204,6 +204,7 @@ class GDEOptimizer:
         mu = None
         sigma = None
         zlt_index = None
+        system_phase = "liquid" if self.config.get("dataset") == "bicarb" else "gas"
         if self.model in (PhModel, MultitaskGPhysModel):
             if "Zero_eps_thickness" not in self._means.index:
                 raise ValueError(
@@ -237,6 +238,7 @@ class GDEOptimizer:
                 config=self.config,
                 n_inputs=len(self.input_labels),
                 zlt_index=zlt_index,
+                system_phase=system_phase,
             )
 
             # Train GP+Ph and return BoTorch-compatible model
@@ -262,6 +264,7 @@ class GDEOptimizer:
                     dropout=0.0,
                     n_inputs=len(self.input_labels),
                     zlt_index=zlt_index,
+                    system_phase=system_phase,
                 )
 
             elif self.model == MLPModel:
