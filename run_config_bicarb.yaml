@@ -1,8 +1,11 @@
 data_file: Bicarb_characterization_data.xlsx
 run_name: bicarb_test_results
 dataset: bicarb
-num_runs: 1
-models: ["MLP", "GP"]
+num_runs: 2
+models: ["GP+Ph", "Ph"]
+# system_phase: gas  # Uncomment to use gas-phase physics with bicarb (liquid) data
+                     # Default: liquid (auto-selected when dataset=bicarb)
+                     # Options: gas (cross-phase test), liquid (standard), or comment out for auto
 property_name: 'FE_CO'
 EI_reference: "max"
 num_iter: 101
