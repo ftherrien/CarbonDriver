@@ -10,6 +10,7 @@ from botorch.acquisition.analytic import LogExpectedImprovement, ExpectedImprove
 from botorch.optim import optimize_acqf
 from botorch.acquisition.objective import ScalarizedPosteriorTransform
 import warnings
+import gpytorch
 
 SUPPORTED_AFs = ["EI", "logEI"]
 
@@ -204,7 +205,7 @@ class GDEOptimizer:
         mu = None
         sigma = None
         zlt_index = None
-        system_phase = "liquid" if self.config.get("dataset") == "bicarb" else "gas"
+        system_phase = self.config.get("system_phase") or ("liquid" if self.config.get("dataset") == "bicarb" else "gas")
         if self.model in (PhModel, MultitaskGPhysModel):
             if "Zero_eps_thickness" not in self._means.index:
                 raise ValueError(
