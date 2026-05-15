@@ -422,7 +422,8 @@ class System(torch.nn.Module):
         overpotential_C2H4 = phi_ext - self.electrode_reaction_potentials["E_0_C2H4"]
         M = lambda k: torch.sqrt(k * L**2 / DCO2)
 
-        # solve without equilibrium reactions
+        _BV_MAX = 40.0  # clamp BV exponent to prevent exp -> inf
+
         k0_CO = (
             A
             / (2 * F)
@@ -430,9 +431,11 @@ class System(torch.nn.Module):
             * thetas["CO"]
             / self.chemical_reaction_rates["c_ref"]
             * torch.exp(
+                torch.clamp(
                 -overpotential_CO
                 * self.butler_volmer_factor
-                * self.electrode_reaction_kinetics["alpha_CO"]
+                * self.electrode_reaction_kinetics["alpha_CO"],
+                max=_BV_MAX)
             )
         )
         k0_C2H4 = (
@@ -442,23 +445,26 @@ class System(torch.nn.Module):
             * thetas["C2H4"]
             / self.chemical_reaction_rates["c_ref"]
             * torch.exp(
+                torch.clamp(
                 -overpotential_C2H4
                 * self.butler_volmer_factor
-                * self.electrode_reaction_kinetics["alpha_C2H4"]
+                * self.electrode_reaction_kinetics["alpha_C2H4"],
+                max=_BV_MAX)
             )
         )
         k0 = k0_CO + k0_C2H4
 
-        # HER rate — computed once, shared by both branches
         r_H2 = (
             A
             * self.electrode_reaction_kinetics["i_0_H2b"]
             * thetas["H2b"]
             / F
             * torch.exp(
+                torch.clamp(
                 -phi_ext
                 * self.butler_volmer_factor
-                * self.electrode_reaction_kinetics["alpha_H2b"]
+                * self.electrode_reaction_kinetics["alpha_H2b"],
+                max=_BV_MAX)
             )
         )  # phi_ext is with respect to SHE
 
@@ -658,9 +664,12 @@ class System(torch.nn.Module):
             Sh = co2_transfer_coeff * L / DCO2
 
             # Exact volume-average / surface-concentration ratio
+            # Replaced cosh/sinh with exp to prevent overflow for large M
+            e2m = torch.exp(-2 * M_val)
+            em = torch.exp(-M_val)
             eta_c = (
-                (Sh * (torch.cosh(M_val) - 1.0) / M_val**2 + torch.sinh(M_val) / M_val)
-                / (Sh * torch.cosh(M_val) + M_val * torch.sinh(M_val))
+                (Sh * (1 + e2m - 2 * em) / M_val**2 + (1 - e2m) / M_val)
+                / (Sh * (1 + e2m) + M_val * (1 - e2m))
             )
 
             # Algebraic self-consistent solve for c03:
@@ -671,6 +680,7 @@ class System(torch.nn.Module):
             J_in = t_H * r_H2 * L
             denominator = k0 * L + co2_transfer_coeff / eta_c - t_H * k0_electron * L
             c03 = J_in / torch.clamp(denominator, min=1e-20)
+            c03 = torch.clamp(c03, min=0.0, max=1e4)
 
             # OH- surface concentration (linear balance)
             r_OH_gen = r_H2 + k0_electron * c03
@@ -722,8 +732,9 @@ class System(torch.nn.Module):
         current_density = (
             co_current_density + c2h4_current_density + (F * L * r_H2) / 10
         )  # mA/cm^2
-        fe_co = co_current_density / current_density
-        fe_c2h4 = c2h4_current_density / current_density
+        current_density_safe = torch.clamp(current_density, min=1e-30)
+        fe_co = torch.where(current_density > 1e-20, co_current_density / current_density_safe, torch.zeros_like(current_density))
+        fe_c2h4 = torch.where(current_density > 1e-20, c2h4_current_density / current_density_safe, torch.zeros_like(current_density))
         parasitic = c03 * c12 * eps * L * self.chemical_reaction_rates["k1f"]
         electrode = L * k0 * c03
 
@@ -772,6 +783,8 @@ class System(torch.nn.Module):
         )  # monotonically increasing
 
         I = solution["current_density"].detach()
+        I = torch.where(torch.isnan(I) | torch.isinf(I),
+                        torch.zeros_like(I), I)
 
         i_target = i_target.reshape(-1, 1)
         idx = (
@@ -781,7 +794,10 @@ class System(torch.nn.Module):
 
         curr_left = I.gather(dim=1, index=idx)
         curr_right = I.gather(dim=1, index=idx + 1)
-        p = (i_target - curr_left) / (curr_right - curr_left)
+        denom = curr_right - curr_left
+        p = torch.where(denom.abs() > 1e-20,
+                        (i_target - curr_left) / denom,
+                        torch.zeros_like(denom))
 
         out = {}
         for k, v in solution.items():
