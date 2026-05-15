@@ -9,17 +9,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from carbondriver import GDEOptimizer
-from carbondriver.loaders import (
-    load_gas_data,
-    load_bicarb_data,
-    default_input_labels,
-    default_output_labels,
-)
+from carbondriver.loaders import load_gas_data, load_bicarb_data
 from typing import Tuple, Optional, Literal
 import torch
 import yaml
 import sys
-import argparse
 
 
 def choose_base_inds_numpy(y: np.ndarray, num_choose: int, how: Literal['max','min'] = 'max', strategy: Literal['uniform','skewed'] = 'uniform', seed: Optional[int] = None):
@@ -80,8 +74,7 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
     # Track results
     expected_improvements = [None] * len(chosen_triplets_ids)
     nll_values = [None] * len(chosen_triplets_ids)  # NLL from training
-    loss_values = [None] * len(chosen_triplets_ids)  # Loss (MSE proxy) from training
-    mae_values = [None] * len(chosen_triplets_ids)  # Mean absolute error from training
+    loss_values = [None] * len(chosen_triplets_ids)
     # Get rows for chosen triplets
     train_df = df[df['triplet'].isin(chosen_triplets_ids)].copy()
     # Get rows for withheld triplets
@@ -103,7 +96,6 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
         expected_improvements.append(float(best_ei))
         nll_values.append(metrics.get('nll', None))
         loss_values.append(metrics.get('loss', None))
-        mae_values.append(metrics.get('mae', None))
         chosen_triplets_ids.append(int(best_triplet.name))
 
         current_best = df_triplet_means.loc[chosen_triplets_ids][config["property_name"]].max().item()
@@ -119,7 +111,6 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
         'expected_improvements': expected_improvements,
         'nll': nll_values,
         'loss': loss_values,
-        'mae': mae_values,
     })
     results_df.to_csv(run_dir / 'chosen_triplets.csv')
     print(f"  Results saved to {run_dir / 'chosen_triplets.csv'}")
@@ -206,43 +197,17 @@ def create_random_baseline(n_runs):
 
 if __name__ == '__main__':
 
-    parser = argparse.ArgumentParser(description="Active learning experiment suite")
-    parser.add_argument("config", help="Path to YAML config file")
-    parser.add_argument("--model", default=None,
-                        help="Run only this model's experiments (e.g. 'GP', 'MLP')")
-    parser.add_argument("--plot-only", action="store_true",
-                        help="Skip experiments, only regenerate plots from existing results")
-    parser.add_argument("--no-plot", action="store_true",
-                        help="Run experiments but skip plotting/summary")
-    parser.add_argument("--num-runs", type=int, default=None,
-                        help="Override num_runs from config (e.g. 50)")
-    args = parser.parse_args()
-
     print("="*70)
     print("ACTIVE LEARNING EXPERIMENT SUITE")
     print("="*70)
     
     print("\n[1/6] Loading configuration...")
-    with open(args.config) as f:
+    with open(sys.argv[1]) as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
-
-    if args.model:
-        if args.model not in config["models"]:
-            raise ValueError(f"Unknown model '{args.model}'. Available: {config['models']}")
-        config["models"] = [args.model]
-        print(f"  Filtered to model: {args.model}")
-
-    if args.num_runs is not None:
-        config["num_runs"] = args.num_runs
-        print(f"  Overriding num_runs: {args.num_runs}")
-
-    if args.plot_only:
-        config["use_existing_results"] = True
-        print("  --plot-only: skipping experiments, generating plots only")
     
     OUTPUT_BASE = Path(config["run_name"])
     print(f"  Output directory: {OUTPUT_BASE}")
-    OUTPUT_BASE.mkdir(exist_ok=True)
+    OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
 
     k_step = config.get('k_step', 9)
     
@@ -264,13 +229,18 @@ if __name__ == '__main__':
     
     print(f"  ✓ Loaded {len(df)} data points from {dataset} dataset")
     
-    output_labels = config.get("output_labels") or default_output_labels(dataset)
-    input_labels = config.get("input_labels") or default_input_labels(dataset)
+    # Determine output labels based on dataset
+    if dataset == "bicarb":
+        output_labels = ["FE_CO", "CO2 utilization"]
+    elif dataset == "gas":
+        output_labels = ["FE (Eth)", "FE (CO)"]
+    else:
+        raise ValueError(f"Unknown dataset: {dataset}")
 
-    missing_cols = [c for c in input_labels + output_labels if c not in df.columns]
-    if missing_cols:
-        raise ValueError(f"Missing required columns for {dataset}: {missing_cols}")
-
+    # Determine input labels from non-constant columns
+    exclude_cols = {"triplet"} | set(output_labels)
+    input_labels = [col for col in df.columns 
+                    if col not in exclude_cols and df[col].nunique() > 1]
     print(f"  Input features: {input_labels}")
 
     df = df[df.loc[:,output_labels].notna().all(axis=1)]
@@ -305,16 +275,9 @@ if __name__ == '__main__':
         print("✓ All experiments completed!")
         print("="*70)
         print("\nGenerating plots...")
-    else:
+    if config["use_existing_results"]:
         print("\n[3/6] Using existing results (use_existing_results=True)")
     
-    if args.no_plot:
-        print("\n  --no-plot: skipping plots and summary statistics.")
-        print("="*70)
-        print("✓ Experiments complete (no plotting).")
-        print("="*70 + "\n")
-        sys.exit(0)
-
     # ========================================================================
     # Plot 1: 2x2 grid - one subplot per model
     # ========================================================================
@@ -323,11 +286,8 @@ if __name__ == '__main__':
     all_data = []
 
     combined_csv = OUTPUT_BASE / 'all_runs_combined.csv'
-    rebuild_combined = bool(config.get("rebuild_all_runs_combined", False))
 
-    if rebuild_combined or not combined_csv.exists():
-        if rebuild_combined and combined_csv.exists():
-            print("  Rebuilding combined data (rebuild_all_runs_combined=True)...")
+    if not combined_csv.exists():
 
         for i, model_name in enumerate(config["models"]):
             print(f"  Processing subplot for {model_name}...")
@@ -455,7 +415,6 @@ if __name__ == '__main__':
         print(f"\n{model_name.upper()}:")
         steps_to_finish = []
         final_nlls = []
-        final_maes = []
         val_at_kstep = []
 
         df_model = all_df_baseline.loc[all_df_baseline["model"]==model_name]
@@ -468,11 +427,6 @@ if __name__ == '__main__':
                 final_nlls.append(chosen_df['nll'].dropna().iat[-1])
             except Exception:
                 # missing column or all-NaN -> skip
-                pass
-
-            try:
-                final_maes.append(chosen_df['mae'].dropna().iat[-1])
-            except Exception:
                 pass
             
             # Find step where cummax FE becomes max
@@ -501,10 +455,6 @@ if __name__ == '__main__':
             print(f"  Mean steps to max FE: {mean_steps:.2f} ± {std_steps:.2f}")
 
             stats[model_name] = {"Mean Steps": mean_steps, "Std Steps": std_steps, "Acceleration Factor": accel_factor, "Val at step k": np.mean(val_at_kstep), "Val at step k std": np.std(val_at_kstep)}
-            if final_maes:
-                print(f"  Final MAE: {np.mean(final_maes):.4f} ± {np.std(final_maes):.4f}")
-                stats[model_name]["Final MAE mean"] = np.mean(final_maes)
-                stats[model_name]["Final MAE std"] = np.std(final_maes)
 
             if final_nlls:
                 print(f"  Final NLL: {np.mean(final_nlls):.4f} ± {np.std(final_nlls):.4f}")
