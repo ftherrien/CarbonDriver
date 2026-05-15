@@ -8,4 +8,5 @@ default_config = {
     "system_phase": None,
     "dataset": "gas",
     "property_name": "FE (Eth)",
+    "data_file": None,
 }

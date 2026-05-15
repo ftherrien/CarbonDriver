@@ -1,6 +1,6 @@
 from .models import PhModel, MLPModel, MultitaskGPModel, BoTorchGP, MultitaskGPhysModel
 from .train import train_model_ens, train_GP_model, train_GP_Ph_model
-from .loaders import feature_stats, default_input_labels, default_output_labels
+from .loaders import feature_stats
 from .config import default_config
 import pandas as pd
 import torch
@@ -86,15 +86,19 @@ class GDEOptimizer:
         self._bounds = bounds
 
         if input_labels is None:
-            self.input_labels = default_input_labels(dataset)
+            self.input_labels = [
+                "AgCu Ratio",
+                "Naf vol (ul)",
+                "Sust vol (ul)",
+                "Zero_eps_thickness",
+                "Catalyst mass loading",
+            ]
         else:
-            # If input_labels are provided, use them
             self.input_labels = input_labels
 
         if output_labels is None:
-            self.output_labels = default_output_labels(dataset)
+            self.output_labels = ["FE (Eth)", "FE (CO)"]
         else:
-            # If output_labels are provided, use them
             self.output_labels = output_labels
 
         # Stats for normalization of feature columns (set in get_predictor when normalize=True)
@@ -286,29 +290,6 @@ class GDEOptimizer:
                 num_iter=self.config["num_iter"],
                 plot=self.config["make_plots"],
             )
-
-        # Compute a simple training-set MAE for reporting. This is a summary
-        # metric only; it does not affect acquisition.
-        with torch.no_grad(), warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=gpytorch.utils.warnings.GPInputWarning)
-            if self.model in (MultitaskGPModel, MultitaskGPhysModel):
-                if self.model == MultitaskGPModel:
-                    model.eval()
-                    likelihood.eval()
-                    mean_predictions = likelihood(model(X)).mean
-                else:
-                    model.eval()
-                    likelihood.eval()
-                    mean_predictions = likelihood(model(X)).mean
-            else:
-                model.eval()
-                mean_predictions = model(X)
-
-            mae = torch.mean(torch.abs(mean_predictions - y)).item()
-
-        if "mae" not in stats.columns:
-            stats["mae"] = np.nan
-        stats.loc[stats.index.max(), "mae"] = mae
 
         return model, stats
 
@@ -575,7 +556,6 @@ class GDEOptimizer:
             metrics["nll"] = np.nan
 
         if "loss" in stats.columns:
-            # Get last non-NaN loss (often MSE/MAE proxy)
             loss_vals = stats["loss"].dropna()
             if len(loss_vals) > 0:
                 metrics["loss"] = float(loss_vals.iloc[-1])
@@ -583,15 +563,6 @@ class GDEOptimizer:
                 metrics["loss"] = np.nan
         else:
             metrics["loss"] = np.nan
-
-        if "mae" in stats.columns:
-            mae_vals = stats["mae"].dropna()
-            if len(mae_vals) > 0:
-                metrics["mae"] = float(mae_vals.iloc[-1])
-            else:
-                metrics["mae"] = np.nan
-        else:
-            metrics["mae"] = np.nan
 
         if return_metrics:
             return best_ei, best_idx, metrics

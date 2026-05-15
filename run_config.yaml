@@ -1,4 +1,3 @@
-data_file: Characterization_data.xlsx
 num_runs: 1
 models: ["MLP","GP", "GP+Ph", "Ph"]
 property_name: 'FE (Eth)'
@@ -12,5 +11,4 @@ normalize_inputs: True
 normalize_outputs: False
 torch_seed: 0
 use_existing_results: False
-rebuild_all_runs_combined: True
 dataset: gas

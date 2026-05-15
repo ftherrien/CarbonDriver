@@ -1,4 +1,3 @@
-data_file: Bicarb_characterization_data.xlsx
 run_name: bicarb_test_results
 dataset: bicarb
 num_runs: 2
@@ -13,4 +12,4 @@ normalize_inputs: True
 normalize_outputs: False
 torch_seed: 0
 use_existing_results: False
-rebuild_all_runs_combined: True
+

@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -9,68 +9,6 @@ import os
 
 Ag_DENSITY = 10490  # kg/m^3
 Cu_DENSITY = 8935  # kg/m^3
-
-GAS_INPUT_COLUMNS = [
-    "AgCu Ratio",
-    "Naf vol (ul)",
-    "Sust vol (ul)",
-    "Zero_eps_thickness",
-    "Catalyst mass loading",
-]
-GAS_OUTPUT_COLUMNS = ["FE (Eth)", "FE (CO)"]
-GAS_FILE_COLUMNS = [
-    "AgCu Ratio",
-    "Naf vol (ul)",
-    "Sust vol (ul)",
-    "Catalyst mass loading",
-] + GAS_OUTPUT_COLUMNS
-
-BICARB_INPUT_COLUMNS = [
-    # Constant in current dataset (nunique <= 1)
-    # "IPA volume",
-    "Zero_eps_thickness",
-    "Ag weight",
-    "Nafion 5 wt% weight",
-    "PTFE weight",
-    # "Air flow rate",
-    "Combustion temperaure",
-    # "Spray height",
-    # "Spray length",
-    # "Spray flow rate",
-    # "# passes",
-    # "# lines",
-    "Current density",
-    # "Bicarb concentration",
-    "Bicarb flow rate",
-    # "Bicarb temperature",
-    # "KOH concentration",
-    # "KOH flow rate",
-]
-BICARB_OUTPUT_COLUMNS = ["FE_CO", "CO2 utilization"]
-
-## Helper functions to check proper columns
-def _validate_columns(df: pd.DataFrame, required: List[str], context: str) -> None:
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise ValueError(f"{context} data is missing required columns: {missing}")
-
-
-def default_input_labels(dataset: str) -> List[str]:
-    """Return the canonical controllable input columns for a dataset."""
-    if dataset == "gas":
-        return GAS_INPUT_COLUMNS.copy()
-    if dataset == "bicarb":
-        return BICARB_INPUT_COLUMNS.copy()
-    raise ValueError(f"Unknown dataset '{dataset}'")
-
-
-def default_output_labels(dataset: str) -> List[str]:
-    """Return the canonical output columns for a dataset."""
-    if dataset == "gas":
-        return GAS_OUTPUT_COLUMNS.copy()
-    if dataset == "bicarb":
-        return BICARB_OUTPUT_COLUMNS.copy()
-    raise ValueError(f"Unknown dataset '{dataset}'")
 
 # Load results from folder
 def load_results_from_folder(
@@ -113,8 +51,16 @@ def load_gas_data(file: Optional[Path] = None) -> pd.DataFrame:
     if file is None:
         file = Path("./Characterization_data.xlsx")
     df = pd.read_excel(file, skiprows=[1], index_col=0)
-    _validate_columns(df, GAS_FILE_COLUMNS, "gas")
-    df = df[GAS_FILE_COLUMNS]
+    df = df[
+        [
+            "AgCu Ratio",
+            "Naf vol (ul)",
+            "Sust vol (ul)",
+            "Catalyst mass loading",
+            "FE (Eth)",
+            "FE (CO)",
+        ]
+    ]
     df = df.sort_values(by=["AgCu Ratio", "Naf vol (ul)"])
     df = df.dropna()
     df["FE (CO)"] = df["FE (CO)"] / 100
@@ -126,7 +72,6 @@ def load_gas_data(file: Optional[Path] = None) -> pd.DataFrame:
     A = area * 1e-4  # m^2
     thickness = (mass / dens_avg) / A  # m
     df.insert(3, column="Zero_eps_thickness", value=thickness)
-    df = df[GAS_INPUT_COLUMNS + GAS_OUTPUT_COLUMNS]
 
     # reshuffle triplets
     df["triplet"] = np.arange(len(df)) // 3
@@ -144,7 +89,7 @@ def load_bicarb_data(filepath: Optional[Path] = None) -> pd.DataFrame:
     df = pd.read_excel(filepath, header=1, index_col=0).iloc[3:,:]
 
     df = separate_repeats(df)
-    df = df.apply(pd.to_numeric, errors='coerce') #Excel Files can have some weird formatting, so coerce to numeric and drop non-convertible rows later
+    df = df.apply(pd.to_numeric, errors='coerce')
 
     df = df.drop(columns=[df.columns[0], "Voltage"])
 
@@ -156,17 +101,6 @@ def load_bicarb_data(filepath: Optional[Path] = None) -> pd.DataFrame:
     A = area * 1e-4  # m^2
     thickness = (mass / Ag_DENSITY) / A  # m
     df.insert(1, column="Zero_eps_thickness", value=thickness)
-
-    _validate_columns(
-        df, BICARB_INPUT_COLUMNS + BICARB_OUTPUT_COLUMNS, 'bicarb'
-    )
-    df = df.dropna(subset=BICARB_OUTPUT_COLUMNS)
-
-    ordered_cols = [
-        c for c in BICARB_INPUT_COLUMNS + BICARB_OUTPUT_COLUMNS if c in df.columns
-    ]
-    remaining_cols = [c for c in df.columns if c not in ordered_cols]
-    df = df[ordered_cols + remaining_cols]
 
     return df.astype(float)
     
