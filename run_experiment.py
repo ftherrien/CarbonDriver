@@ -14,6 +14,7 @@ from typing import Tuple, Optional, Literal
 import torch
 import yaml
 import sys
+import argparse
 
 
 def choose_base_inds_numpy(y: np.ndarray, num_choose: int, how: Literal['max','min'] = 'max', strategy: Literal['uniform','skewed'] = 'uniform', seed: Optional[int] = None):
@@ -196,13 +197,17 @@ def create_random_baseline(n_runs):
 # ============================================================================
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Run active learning experiments')
+    parser.add_argument('--no-plot', action='store_true', help='Skip plotting')
+    parser.add_argument('config', type=str, help='Path to YAML config file')
+    args = parser.parse_args()
 
     print("="*70)
     print("ACTIVE LEARNING EXPERIMENT SUITE")
     print("="*70)
     
     print("\n[1/6] Loading configuration...")
-    with open(sys.argv[1]) as f:
+    with open(args.config) as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
     
     OUTPUT_BASE = Path(config["run_name"])
@@ -274,6 +279,9 @@ if __name__ == '__main__':
         print("\n" + "="*70)
         print("✓ All experiments completed!")
         print("="*70)
+        if args.no_plot:
+            print("\nSkipping plots (--no-plot flag set)")
+            sys.exit(0)
         print("\nGenerating plots...")
     if config["use_existing_results"]:
         print("\n[3/6] Using existing results (use_existing_results=True)")
