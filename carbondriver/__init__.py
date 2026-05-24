@@ -6,13 +6,13 @@ import pandas as pd
 import torch
 import numpy as np
 from typing import Tuple, Optional
-from botorch.acquisition.analytic import LogExpectedImprovement, ExpectedImprovement
+from botorch.acquisition.analytic import LogExpectedImprovement, ExpectedImprovement, ProbabilityOfImprovement
 from botorch.optim import optimize_acqf
 from botorch.acquisition.objective import ScalarizedPosteriorTransform
 import warnings
 import gpytorch
 
-SUPPORTED_AFs = ["EI", "logEI"]
+SUPPORTED_AFs = ["EI", "logEI", "PI"]
 
 
 class GDEOptimizer:
@@ -295,14 +295,14 @@ class GDEOptimizer:
 
     def _get_acquisition_function(
         self, predictor: torch.nn.Module
-    ) -> ExpectedImprovement | LogExpectedImprovement:
+    ) -> ExpectedImprovement | LogExpectedImprovement | ProbabilityOfImprovement:
         """
         Get the acquisition function based on the specified acquisition type.
 
         :param predictor: trained model for predictions
-        :returns: BoTorch acquisition function (EI or logEI)
+        :returns: BoTorch acquisition function (EI, logEI, or PI)
 
-        Note: The acquisition function is in normalized space if normalizatipon is enabled, so the expected imporovment is not the actual value for example. Also normalizing here just for consistency because y is not actually normalized.
+        Note: The acquisition function is in normalized space if normalization is enabled, so the expected improvement is not the actual value for example. Also normalizing here just for consistency because y is not actually normalized.
         """
 
         _, y = self._get_data_tensors()
@@ -332,8 +332,13 @@ class GDEOptimizer:
                 best_f=best_f,
                 maximize=self.maximize,
             )
-        else:
-            raise ValueError("Unsupported acquisition function.")
+        if self.aquisition == "PI":
+            return ProbabilityOfImprovement(
+                predictor,
+                best_f=best_f,
+                maximize=self.maximize,
+            )
+        raise ValueError(f"Unsupported acquisition function: {self.aquisition}")
 
     def step(
         self, new_data: pd.DataFrame, bounds: Optional[torch.Tensor] = None
