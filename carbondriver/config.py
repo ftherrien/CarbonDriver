@@ -9,4 +9,5 @@ default_config = {
     "dataset": "gas",
     "property_name": "FE (Eth)",
     "data_file": None,
+    "acquisition": "EI",
 }

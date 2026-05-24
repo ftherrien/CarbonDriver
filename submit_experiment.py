@@ -7,7 +7,7 @@ After all jobs finish, re-run with ``use_existing_results: True`` to regenerate 
 Usage:
     python submit_experiment.py
 
-The EXPERIMANTS list below defines all experiment configurations.
+The EXPERIMENTS list below defines all experiment configurations.
 """
 import sys
 from pathlib import Path
@@ -26,17 +26,20 @@ SCRIPT_NAME = "run_experiment.py"
 RESULTS_DIR = Path("../cluster_results")
 
 EXPERIMENTS = [
-    {"dataset": "bicarb", "system_phase": "liquid", "EI_reference": "max", "models": ["MLP", "GP", "GP+Ph", "Ph"]},
-    {"dataset": "bicarb", "system_phase": "liquid", "EI_reference": "min", "models": ["MLP", "GP", "GP+Ph", "Ph"]},
-    {"dataset": "bicarb", "system_phase": "gas",    "EI_reference": "max", "models": ["GP+Ph", "Ph"]},
-    {"dataset": "bicarb", "system_phase": "gas",    "EI_reference": "min", "models": ["GP+Ph", "Ph"]},
+    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "EI", "EI_reference": "max", "models": ["MLP", "GP", "GP+Ph", "Ph"]},
+    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "EI", "EI_reference": "min", "models": ["MLP", "GP", "GP+Ph", "Ph"]},
+    {"dataset": "bicarb", "system_phase": "gas",    "acquisition": "EI", "EI_reference": "max", "models": ["GP+Ph", "Ph"]},
+    {"dataset": "bicarb", "system_phase": "gas",    "acquisition": "EI", "EI_reference": "min", "models": ["GP+Ph", "Ph"]},
+    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "PI", "EI_reference": "max", "models": ["MLP", "GP", "GP+Ph", "Ph"]},
+    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "PI", "EI_reference": "min", "models": ["MLP", "GP", "GP+Ph", "Ph"]},
 ]
 
 
 def experiment_tag(exp: dict) -> str:
     phase = exp["system_phase"]
+    acq = exp.get("acquisition", "EI")
     ei = exp["EI_reference"]
-    return f"{phase}_liquid_EI_{ei}"
+    return f"{phase}_liquid_{acq}_{ei}"
 
 
 def build_config(exp: dict, model: str) -> dict:
@@ -48,6 +51,7 @@ def build_config(exp: dict, model: str) -> dict:
         "num_runs": 100,
         "models": [model],
         "property_name": "FE_CO",
+        "acquisition": exp.get("acquisition", "EI"),
         "EI_reference": exp["EI_reference"],
         "num_iter": 101,
         "normalize_inputs": True,
@@ -83,7 +87,7 @@ def submit_all(dst_dir: Path) -> None:
         models = exp["models"]
         print(f"\n{'─'*60}")
         print(f"  Experiment: {tag}")
-        print(f"  dataset={exp['dataset']}  system_phase={exp['system_phase']}  EI_reference={exp['EI_reference']}")
+        print(f"  dataset={exp['dataset']}  system_phase={exp['system_phase']}  acquisition={exp.get('acquisition', 'EI')}  EI_reference={exp['EI_reference']}")
         print(f"  models={models}")
         print(f"{'─'*60}")
 
