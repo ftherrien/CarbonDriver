@@ -6,13 +6,13 @@ import pandas as pd
 import torch
 import numpy as np
 from typing import Tuple, Optional
-from botorch.acquisition.analytic import LogExpectedImprovement, ExpectedImprovement, ProbabilityOfImprovement
+from botorch.acquisition.analytic import LogExpectedImprovement, ExpectedImprovement, ProbabilityOfImprovement, UpperConfidenceBound
 from botorch.optim import optimize_acqf
 from botorch.acquisition.objective import ScalarizedPosteriorTransform
 import warnings
 import gpytorch
 
-SUPPORTED_AFs = ["EI", "logEI", "PI"]
+SUPPORTED_AFs = ["EI", "logEI", "PI", "UCB"]
 
 
 class GDEOptimizer:
@@ -336,6 +336,13 @@ class GDEOptimizer:
             return ProbabilityOfImprovement(
                 predictor,
                 best_f=best_f,
+                maximize=self.maximize,
+            )
+        if self.aquisition == "UCB":
+            beta = self.config.get("UCB_beta", 1.0)
+            return UpperConfidenceBound(
+                predictor,
+                beta=beta,
                 maximize=self.maximize,
             )
         raise ValueError(f"Unsupported acquisition function: {self.aquisition}")
