@@ -98,7 +98,6 @@ def submit_all(dst_dir: Path) -> None:
             print(f"  UCB_beta={exp.get('UCB_beta', 1.0)}")
         else:
             print(f"  EI_reference={exp['EI_reference']}")
-        print(f"  dataset={exp['dataset']}  system_phase={exp['system_phase']}  acquisition={exp.get('acquisition', 'EI')}  EI_reference={exp['EI_reference']}")
         print(f"  models={models}")
         print(f"{'─'*60}")
 
