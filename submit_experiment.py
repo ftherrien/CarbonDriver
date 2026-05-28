@@ -26,25 +26,27 @@ SCRIPT_NAME = "run_experiment.py"
 RESULTS_DIR = Path("../cluster_results")
 
 EXPERIMENTS = [
-    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "EI", "EI_reference": "max", "models": ["MLP", "GP", "GP+Ph", "Ph"]},
-    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "EI", "EI_reference": "min", "models": ["MLP", "GP", "GP+Ph", "Ph"]},
-    {"dataset": "bicarb", "system_phase": "gas",    "acquisition": "EI", "EI_reference": "max", "models": ["GP+Ph", "Ph"]},
-    {"dataset": "bicarb", "system_phase": "gas",    "acquisition": "EI", "EI_reference": "min", "models": ["GP+Ph", "Ph"]},
-    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "PI", "EI_reference": "max", "models": ["MLP", "GP", "GP+Ph", "Ph"]},
-    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "PI", "EI_reference": "min", "models": ["MLP", "GP", "GP+Ph", "Ph"]},
+    # UCB acquisition function only (beta values 1.0 and 3.0)
+    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "UCB", "UCB_beta": 1.0, "models": ["MLP", "GP", "GP+Ph", "Ph"]},
+    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "UCB", "UCB_beta": 3.0, "models": ["MLP", "GP", "GP+Ph", "Ph"]},
+    {"dataset": "bicarb", "system_phase": "gas",    "acquisition": "UCB", "UCB_beta": 1.0, "models": ["GP+Ph", "Ph"]},
+    {"dataset": "bicarb", "system_phase": "gas",    "acquisition": "UCB", "UCB_beta": 3.0, "models": ["GP+Ph", "Ph"]},
 ]
 
 
 def experiment_tag(exp: dict) -> str:
     phase = exp["system_phase"]
     acq = exp.get("acquisition", "EI")
+    if acq == "UCB":
+        beta = exp.get("UCB_beta", 1.0)
+        return f"{phase}_liquid_{acq}_{beta}"
     ei = exp["EI_reference"]
     return f"{phase}_liquid_{acq}_{ei}"
 
 
 def build_config(exp: dict, model: str) -> dict:
     tag = experiment_tag(exp)
-    return {
+    cfg = {
         "run_name": str(RESULTS_DIR / f"{tag}_results"),
         "dataset": exp["dataset"],
         "system_phase": exp["system_phase"],
@@ -52,13 +54,17 @@ def build_config(exp: dict, model: str) -> dict:
         "models": [model],
         "property_name": "FE_CO",
         "acquisition": exp.get("acquisition", "EI"),
-        "EI_reference": exp["EI_reference"],
         "num_iter": 101,
         "normalize_inputs": True,
         "normalize_outputs": False,
         "torch_seed": 0,
         "use_existing_results": False,
     }
+    if exp.get("EI_reference"):
+        cfg["EI_reference"] = exp["EI_reference"]
+    if exp.get("UCB_beta"):
+        cfg["UCB_beta"] = exp["UCB_beta"]
+    return cfg
 
 
 def create_slurm_script(job_name: str, config_path: str) -> str:
@@ -87,6 +93,11 @@ def submit_all(dst_dir: Path) -> None:
         models = exp["models"]
         print(f"\n{'─'*60}")
         print(f"  Experiment: {tag}")
+        print(f"  dataset={exp['dataset']}  system_phase={exp['system_phase']}  acquisition={exp.get('acquisition', 'EI')}", end="")
+        if exp.get("acquisition") == "UCB":
+            print(f"  UCB_beta={exp.get('UCB_beta', 1.0)}")
+        else:
+            print(f"  EI_reference={exp['EI_reference']}")
         print(f"  dataset={exp['dataset']}  system_phase={exp['system_phase']}  acquisition={exp.get('acquisition', 'EI')}  EI_reference={exp['EI_reference']}")
         print(f"  models={models}")
         print(f"{'─'*60}")
