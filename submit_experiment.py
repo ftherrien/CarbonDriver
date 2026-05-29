@@ -26,11 +26,8 @@ SCRIPT_NAME = "run_experiment.py"
 RESULTS_DIR = Path("../cluster_results")
 
 EXPERIMENTS = [
-    # UCB acquisition function only (beta values 1.0 and 3.0)
-    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "UCB", "UCB_beta": 1.0, "models": ["MLP", "GP", "GP+Ph", "Ph"]},
-    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "UCB", "UCB_beta": 3.0, "models": ["MLP", "GP", "GP+Ph", "Ph"]},
-    {"dataset": "bicarb", "system_phase": "gas",    "acquisition": "UCB", "UCB_beta": 1.0, "models": ["GP+Ph", "Ph"]},
-    {"dataset": "bicarb", "system_phase": "gas",    "acquisition": "UCB", "UCB_beta": 3.0, "models": ["GP+Ph", "Ph"]},
+    # UCB 3.0 with transfer learning (gas → bicarb)
+    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "UCB", "UCB_beta": 3.0, "models": ["MLP", "GP", "GP+Ph", "Ph"], "pretrained_weights": "auto"},
 ]
 
 
