@@ -15,6 +15,52 @@ import gpytorch
 SUPPORTED_AFs = ["EI", "logEI", "PI", "UCB"]
 
 
+def load_compatible_state_dict(
+    model: torch.nn.Module,
+    source_state_dict: dict,
+) -> None:
+    """Load weights from source_state_dict into model, skipping mismatched layers.
+
+    Transfers all parameters/buffers whose name and shape match between
+    source and target. Layers with different shapes (e.g. the input Linear
+    layer when feature counts differ between datasets) are left with their
+    random initialization.
+
+    :param model: target model to load weights into
+    :param source_state_dict: state dict from the source (pre-trained) model
+    """
+    target_sd = model.state_dict()
+    loaded, skipped = [], []
+    for key, source_param in source_state_dict.items():
+        if key not in target_sd:
+            skipped.append((key, "not in target"))
+            continue
+        if source_param.shape != target_sd[key].shape:
+            skipped.append((key, f"shape mismatch: source {source_param.shape} vs target {target_sd[key].shape}"))
+            continue
+        target_sd[key] = source_param
+        loaded.append(key)
+    model.load_state_dict(target_sd)
+    print(f"  Transfer: loaded {len(loaded)} params, skipped {len(skipped)}")
+    for key, reason in skipped:
+        print(f"    Skipped '{key}': {reason}")
+
+
+def _wrap_with_transfer(model_constructor, pretrained_path: str):
+    """Wrap a model constructor to apply transfer learning from pretrained weights.
+
+    :param model_constructor: callable that creates a model instance
+    :param pretrained_path: path to .pt file with pretrained state_dict
+    :returns: new callable that creates model and loads compatible weights
+    """
+    def wrapped():
+        model = model_constructor()
+        source_sd = torch.load(pretrained_path, map_location="cpu", weights_only=True)
+        load_compatible_state_dict(model, source_sd)
+        return model
+    return wrapped
+
+
 class GDEOptimizer:
     """
     Class to optimize gas diffusion electrodes experimental parameters based with Bayesian optimization using various models.
@@ -105,6 +151,23 @@ class GDEOptimizer:
         self._means = None  # torch.Tensor of shape (d,)
         self._stds = None  # torch.Tensor of shape (d,)
 
+        self._pretrained_weights = self.config.get("pretrained_weights")
+        if self._pretrained_weights is not None:
+            from pathlib import Path as _Path
+            pw = _Path(self._pretrained_weights)
+            if pw.is_dir():
+                model_tag = {"GP": "GP", "Ph": "Ph", "MLP": "MLP", "GP+Ph": "GP+Ph"}.get(model_name, model_name)
+                candidate = pw / f"{model_tag}_weights.pt"
+                if candidate.exists():
+                    self._pretrained_weights = str(candidate)
+                    print(f"  Using pretrained weights: {candidate}")
+                else:
+                    print(f"  No pretrained weights found at {candidate}, training from scratch")
+                    self._pretrained_weights = None
+            elif not pw.exists():
+                print(f"  Pretrained weights path {pw} does not exist, training from scratch")
+                self._pretrained_weights = None
+
     def _get_data_tensors(
         self, data: Optional[pd.DataFrame] = None, update_stats: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -183,6 +246,19 @@ class GDEOptimizer:
         """
         raise NotImplementedError
 
+    def save_weights(self, path: str) -> None:
+        """
+        Save the current model weights (from the last trained predictor) to disk.
+
+        :param path: file path to save weights (e.g. 'pretrained/Ph_weights.pt')
+        """
+        if not hasattr(self, '_last_trained_model') or self._last_trained_model is None:
+            raise RuntimeError("No trained model available. Run get_predictor() first.")
+        from pathlib import Path
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        torch.save(self._last_trained_model.state_dict(), path)
+        print(f"Saved weights to {path}")
+
     def update_data(self, new_data: pd.DataFrame | pd.Series) -> None:
         """
         Add new experimental data to the dataset (and sort by 'triplet' for now).
@@ -219,6 +295,8 @@ class GDEOptimizer:
             sigma = float(self._stds["Zero_eps_thickness"])
             zlt_index = self.input_labels.index("Zero_eps_thickness")
 
+        self._last_trained_model = None
+
         # Special handling for GP and GP+Ph models: these use gpytorch training functions
         # (they are not compatible with the ensemble training pipeline used for MLP/Ph).
         if self.model == MultitaskGPModel:
@@ -245,6 +323,9 @@ class GDEOptimizer:
                 zlt_index=zlt_index,
                 system_phase=system_phase,
             )
+
+            if self._pretrained_weights is not None:
+                ph_model_constructor = _wrap_with_transfer(ph_model_constructor, self._pretrained_weights)
 
             # Train GP+Ph and return BoTorch-compatible model
             stats, _, model, likelihood = train_GP_Ph_model(
@@ -280,6 +361,9 @@ class GDEOptimizer:
                     n_inputs=n_in,
                     n_outputs=n_out,
                 )
+
+            if self._pretrained_weights is not None:
+                model_factory = _wrap_with_transfer(model_factory, self._pretrained_weights)
 
             stats, model = train_model_ens(
                 X,

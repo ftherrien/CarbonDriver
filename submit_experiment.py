@@ -37,11 +37,12 @@ EXPERIMENTS = [
 def experiment_tag(exp: dict) -> str:
     phase = exp["system_phase"]
     acq = exp.get("acquisition", "EI")
+    transfer = "transfer" if exp.get("pretrained_weights") else "scratch"
     if acq == "UCB":
         beta = exp.get("UCB_beta", 1.0)
-        return f"{phase}_liquid_{acq}_{beta}"
+        return f"{phase}_liquid_{acq}_{beta}_{transfer}"
     ei = exp["EI_reference"]
-    return f"{phase}_liquid_{acq}_{ei}"
+    return f"{phase}_liquid_{acq}_{ei}_{transfer}"
 
 
 def build_config(exp: dict, model: str) -> dict:
@@ -60,6 +61,8 @@ def build_config(exp: dict, model: str) -> dict:
         "torch_seed": 0,
         "use_existing_results": False,
     }
+    if exp.get("pretrained_weights"):
+        cfg["pretrained_weights"] = exp["pretrained_weights"]
     if exp.get("EI_reference"):
         cfg["EI_reference"] = exp["EI_reference"]
     if exp.get("UCB_beta"):
@@ -98,6 +101,8 @@ def submit_all(dst_dir: Path) -> None:
             print(f"  UCB_beta={exp.get('UCB_beta', 1.0)}")
         else:
             print(f"  EI_reference={exp['EI_reference']}")
+        if exp.get("pretrained_weights"):
+            print(f"  transfer=gas→bicarb")
         print(f"  models={models}")
         print(f"{'─'*60}")
 

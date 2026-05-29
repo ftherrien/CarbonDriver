@@ -34,6 +34,81 @@ def choose_base_inds_numpy(y: np.ndarray, num_choose: int, how: Literal['max','m
     rng = np.random.default_rng(seed)
     return rng.choice(ind, size=num_choose, replace=False, p=p)
 
+def pretrain_on_gas(model_name: str, config: dict, output_dir: Path) -> Optional[str]:
+    """Pre-train a model on the full gas dataset and save weights for transfer learning.
+
+    Trains a single model instance (not the full 50-model ensemble) on all gas data,
+    then saves its state_dict for use as weight initialization in bicarb experiments.
+
+    :param model_name: model to pre-train (Ph, MLP, or GP+Ph)
+    :param config: experiment config (used for training params)
+    :param output_dir: directory to save pretrained weights
+    :returns: path to saved weights file, or None if model doesn't support transfer
+    """
+    if model_name not in ("Ph", "MLP", "GP+Ph"):
+        return None
+
+    weights_dir = output_dir / "gas_pretrained"
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    weights_path = weights_dir / f"{model_name}_weights.pt"
+
+    if weights_path.exists():
+        print(f"  Pre-trained weights already exist at {weights_path}")
+        return str(weights_path)
+
+    print(f"  Pre-training {model_name} on gas data for transfer learning...")
+    gas_df = load_gas_data()
+    gas_output_labels = ["FE (Eth)", "FE (CO)"]
+    gas_input_labels = ["AgCu Ratio", "Naf vol (ul)", "Sust vol (ul)", "Zero_eps_thickness", "Catalyst mass loading"]
+
+    from carbondriver.train import train_Ph_model
+    from carbondriver.models import PhModel as PhModelCls, MLPModel as MLPModelCls
+
+    gas_config = config.copy()
+    gas_config["dataset"] = "gas"
+    gas_config["system_phase"] = "gas"
+    gas_config["normalize_inputs"] = True
+    gas_config["normalize_outputs"] = False
+
+    df_clean = gas_df[gas_input_labels + gas_output_labels].dropna()
+    means = df_clean.mean()
+    stds = df_clean.std(ddof=0)
+
+    if stds[gas_input_labels].min() < 1e-10:
+        stds.loc[stds.index.isin(gas_input_labels) & (stds < 1e-10)] = 1
+
+    X_gas = torch.tensor(((df_clean[gas_input_labels] - means[gas_input_labels]) / stds[gas_input_labels]).values, dtype=torch.float32)
+    y_gas = torch.tensor(df_clean[gas_output_labels].values, dtype=torch.float32)
+
+    mu = float(means["Zero_eps_thickness"])
+    sigma = float(stds["Zero_eps_thickness"])
+    zlt_index = gas_input_labels.index("Zero_eps_thickness")
+
+    if model_name in ("Ph", "GP+Ph"):
+        model_constructor = lambda: PhModelCls(
+            zlt_mu=mu,
+            zlt_sigma=sigma,
+            current_target=233,
+            config=gas_config,
+            n_inputs=len(gas_input_labels),
+            zlt_index=zlt_index,
+            system_phase="gas",
+        )
+    elif model_name == "MLP":
+        model_constructor = lambda: MLPModelCls(
+            n_inputs=len(gas_input_labels),
+            n_outputs=len(gas_output_labels),
+        )
+
+    _, trained_model = train_Ph_model(
+        X_gas, y_gas, model_constructor,
+        num_iter=config.get("num_iter", 101),
+    )
+
+    torch.save(trained_model.state_dict(), weights_path)
+    print(f"  Saved pre-trained weights to {weights_path}")
+    return str(weights_path)
+
 def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
     """Run a single active learning experiment for the given model."""
     
@@ -187,7 +262,6 @@ def create_random_baseline(n_runs):
         current_run['model'] = "baseline"
 
         current_run = current_run[current_run['step'] >= 0]
-        
         all_df.append(current_run)
     
     print(f"    ✓ Created {n_runs} baseline runs")
@@ -256,6 +330,15 @@ if __name__ == '__main__':
 
     config["input_labels"] = input_labels
     config["output_labels"] = output_labels
+    
+    # Pre-training for transfer learning (gas → bicarb)
+    if config.get("pretrained_weights") == "auto" and dataset == "bicarb":
+        print("\n[2.5/6] Pre-training on gas data for transfer learning...")
+        for model in config["models"]:
+            weights_path = pretrain_on_gas(model, config, OUTPUT_BASE)
+            if weights_path is not None:
+                print(f"  Transfer weights for {model}: {weights_path}")
+        config["pretrained_weights"] = str(OUTPUT_BASE / "gas_pretrained")
     
     if not config["use_existing_results"]:
         

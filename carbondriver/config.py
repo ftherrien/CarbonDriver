@@ -11,4 +11,5 @@ default_config = {
     "property_name": "FE (Eth)",
     "data_file": None,
     "acquisition": "EI",
+    "pretrained_weights": None,
 }
