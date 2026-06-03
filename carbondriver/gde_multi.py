@@ -738,6 +738,16 @@ class System(torch.nn.Module):
         parasitic = c03 * c12 * eps * L * self.chemical_reaction_rates["k1f"]
         electrode = L * k0 * c03
 
+        if self.system_phase == "liquid":
+            J_in = t_H * r_H2 * L
+            co2_utilization = torch.where(
+                J_in > 1e-20,
+                torch.clamp(electrode / J_in, min=0.0, max=1.0),
+                torch.zeros_like(electrode),
+            )
+        else:
+            co2_utilization = torch.zeros_like(electrode)
+
         return {
             "phi_ext": phi_ext,
             "k0": k0,
@@ -755,6 +765,7 @@ class System(torch.nn.Module):
             "fe_c2h4": fe_c2h4,
             "parasitic": parasitic,
             "electrode": electrode,
+            "co2_utilization": co2_utilization,
             "gdl_flux": gdl_flux,
             "hco3": hco3,
             "solubility": solubility,
