@@ -99,7 +99,7 @@ class PhModel(torch.nn.Module):
         Predict Faradaic efficiency for given experimental parameters.
 
         :param x: input features of shape (batch, n_inputs)
-        :returns: predicted FE values of shape (batch, 2) [FE(C2H4), FE(CO)]
+        :returns: predicted FE values of shape (batch, 2). Gas: [FE(C2H4), FE(CO)], Liquid/Bicarb: [FE(CO), CO2 utilization]
         """
         if x.shape[-1] != self.n_inputs:
             raise ValueError(
@@ -142,7 +142,10 @@ class PhModel(torch.nn.Module):
             voltage_bounds=(-1.25, 0),
         )
 
-        out = torch.cat([solution["fe_c2h4"], solution["fe_co"]], dim=-1)
+        if self.ph_model.system_phase == "liquid" or self.config.get("dataset") == "bicarb":
+            out = torch.cat([solution["fe_co"], solution["co2_utilization"]], dim=-1)
+        else:
+            out = torch.cat([solution["fe_c2h4"], solution["fe_co"]], dim=-1)
         return out
 
 

@@ -17,31 +17,39 @@ import yaml
 
 MODELS = ["MLP", "GP", "GP+Ph", "Ph"]
 
-WALLTIME = "13:00:00"
+WALLTIME = "16:00:00"
 NTASKS = 8
 MEM = "16GB"
 ACCOUNT = "def-peslherb"
 
 SCRIPT_NAME = "run_experiment.py"
-RESULTS_DIR = Path("../cluster_results")
+RESULTS_DIR = Path("cluster_results")
 
 EXPERIMENTS = [
-    # UCB acquisition function only (beta values 1.0 and 3.0)
-    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "UCB", "UCB_beta": 1.0, "models": ["MLP", "GP", "GP+Ph", "Ph"]},
-    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "UCB", "UCB_beta": 3.0, "models": ["MLP", "GP", "GP+Ph", "Ph"]},
-    {"dataset": "bicarb", "system_phase": "gas",    "acquisition": "UCB", "UCB_beta": 1.0, "models": ["GP+Ph", "Ph"]},
-    {"dataset": "bicarb", "system_phase": "gas",    "acquisition": "UCB", "UCB_beta": 3.0, "models": ["GP+Ph", "Ph"]},
+    # ── Bicarb data, liquid physics (4 models) ──────────────────
+    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "EI", "EI_reference": "max", "property_name": "FE_CO"},
+    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "EI", "EI_reference": "min", "property_name": "FE_CO"},
+    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "PI", "EI_reference": "max", "property_name": "FE_CO"},
+    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "UCB", "UCB_beta": 1.0, "property_name": "FE_CO"},
+    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "UCB", "UCB_beta": 3.0, "property_name": "FE_CO"},
+    # ── Bicarb data, gas physics (2 models) ─────────────────────
+    {"dataset": "bicarb", "system_phase": "gas", "acquisition": "EI", "EI_reference": "max", "property_name": "FE_CO", "models": ["GP+Ph", "Ph"]},
+    {"dataset": "bicarb", "system_phase": "gas", "acquisition": "EI", "EI_reference": "min", "property_name": "FE_CO", "models": ["GP+Ph", "Ph"]},
+    {"dataset": "bicarb", "system_phase": "gas", "acquisition": "PI", "EI_reference": "max", "property_name": "FE_CO", "models": ["GP+Ph", "Ph"]},
+    {"dataset": "bicarb", "system_phase": "gas", "acquisition": "UCB", "UCB_beta": 1.0, "property_name": "FE_CO", "models": ["GP+Ph", "Ph"]},
+    {"dataset": "bicarb", "system_phase": "gas", "acquisition": "UCB", "UCB_beta": 3.0, "property_name": "FE_CO", "models": ["GP+Ph", "Ph"]},
 ]
 
 
 def experiment_tag(exp: dict) -> str:
+    dataset = exp["dataset"]
     phase = exp["system_phase"]
     acq = exp.get("acquisition", "EI")
     if acq == "UCB":
         beta = exp.get("UCB_beta", 1.0)
-        return f"{phase}_liquid_{acq}_{beta}"
-    ei = exp["EI_reference"]
-    return f"{phase}_liquid_{acq}_{ei}"
+        return f"{dataset}_{phase}_{acq}_{beta}_{transfer}"
+    ei_ref = exp.get("EI_reference", "max")
+    return f"{dataset}_{phase}_{acq}_{ei_ref}_{transfer}"
 
 
 def build_config(exp: dict, model: str) -> dict:
@@ -52,7 +60,7 @@ def build_config(exp: dict, model: str) -> dict:
         "system_phase": exp["system_phase"],
         "num_runs": 100,
         "models": [model],
-        "property_name": "FE_CO",
+        "property_name": exp.get("property_name", "FE_CO"),
         "acquisition": exp.get("acquisition", "EI"),
         "num_iter": 101,
         "normalize_inputs": True,
@@ -80,7 +88,9 @@ def create_slurm_script(job_name: str, config_path: str) -> str:
 
     set -euo pipefail
 
-    cd "$SLURM_SUBMIT_DIR"
+    cd /scratch/anizami/CO2_liq
+
+    source ~/CO2_a/bin/activate
 
     python {SCRIPT_NAME} --no-plot {config_path}
     """)
@@ -90,14 +100,16 @@ def submit_all(dst_dir: Path) -> None:
     total_jobs = 0
     for exp in EXPERIMENTS:
         tag = experiment_tag(exp)
-        models = exp["models"]
+        models = exp.get("models", MODELS)
         print(f"\n{'─'*60}")
         print(f"  Experiment: {tag}")
         print(f"  dataset={exp['dataset']}  system_phase={exp['system_phase']}  acquisition={exp.get('acquisition', 'EI')}", end="")
         if exp.get("acquisition") == "UCB":
             print(f"  UCB_beta={exp.get('UCB_beta', 1.0)}")
         else:
+
             print(f"  EI_reference={exp['EI_reference']}")
+
         print(f"  models={models}")
         print(f"{'─'*60}")
 
@@ -135,7 +147,7 @@ def submit_all(dst_dir: Path) -> None:
 if __name__ == "__main__":
     repo_dir = Path(__file__).parent
 
-    total_jobs = sum(len(e["models"]) for e in EXPERIMENTS)
+    total_jobs = sum(len(e.get("models", MODELS)) for e in EXPERIMENTS)
     print(f"Submitting {total_jobs} SLURM jobs across {len(EXPERIMENTS)} experiments")
     print(f"Walltime: {WALLTIME}  |  Tasks: {NTASKS}  |  Mem: {MEM}")
     print(f"Runs per model: 100")
