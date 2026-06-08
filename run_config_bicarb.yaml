@@ -1,15 +1,12 @@
-run_name: bicarb_test_results
+run_name: ../ada_narval/CO2-catalysis/bicarb_tests
 dataset: bicarb
 num_runs: 2
-models: ["GP+Ph", "Ph"]
-# system_phase: gas  # Uncomment to use gas-phase physics with bicarb (liquid) data
-                     # Default: liquid (auto-selected when dataset=bicarb)
-                     # Options: gas (cross-phase test), liquid (standard), or comment out for auto
+models: ["Ph", "GP+Ph", "MLP", "GP"]
+system_phase: gas
 property_name: 'FE_CO'
 EI_reference: "max"
 num_iter: 101
 normalize_inputs: True
 normalize_outputs: False
 torch_seed: 0
-use_existing_results: False
-
+use_existing_results: True
