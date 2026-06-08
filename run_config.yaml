@@ -1,14 +1,13 @@
-num_runs: 1
-models: ["MLP","GP", "GP+Ph", "Ph"]
+num_runs: 2
+models: ["Ph", "GP+Ph", "MLP", "GP"]
 property_name: 'FE (Eth)'
 run_name: ../ada_narval/CO2-catalysis/all_min_MLP_Ph_GP_GP+Ph_results
-# system_phase: liquid  # Uncomment to use liquid-phase physics with gas data
-                        # Default: gas (auto-selected when dataset=gas or unset)
-                        # Options: liquid (cross-phase test), gas (standard), or comment out for auto
+system_phase: gas
+acquisition: EI
 EI_reference: "min"
 num_iter: 101
 normalize_inputs: True
 normalize_outputs: False
 torch_seed: 0
-use_existing_results: False
+use_existing_results: True
 dataset: gas

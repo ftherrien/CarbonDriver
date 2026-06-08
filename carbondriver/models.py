@@ -142,7 +142,7 @@ class PhModel(torch.nn.Module):
             voltage_bounds=(-1.25, 0),
         )
 
-        if self.ph_model.system_phase == "liquid" or self.config.get("dataset") == "bicarb":
+        if self.config.get("dataset") == "bicarb":
             out = torch.cat([solution["fe_co"], solution["co2_utilization"]], dim=-1)
         else:
             out = torch.cat([solution["fe_c2h4"], solution["fe_co"]], dim=-1)

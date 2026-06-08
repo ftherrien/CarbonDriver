@@ -746,7 +746,7 @@ class System(torch.nn.Module):
                 torch.zeros_like(electrode),
             )
         else:
-            co2_utilization = torch.zeros_like(electrode)
+            co2_utilization = torch.where(k0 > 1e-20, k0 / k2, torch.zeros_like(k0))
 
         return {
             "phi_ext": phi_ext,

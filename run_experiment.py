@@ -252,7 +252,7 @@ if __name__ == '__main__':
     df = df[df.loc[:,output_labels].notna().all(axis=1)]
 
     df_triplet_means = df.groupby('triplet').mean()
-    best_id = int(df_triplet_means[config["property_name"]].idxmax())    
+    best_id = int(df_triplet_means[config["property_name"]].idxmax())
 
     config["input_labels"] = input_labels
     config["output_labels"] = output_labels
@@ -331,7 +331,7 @@ if __name__ == '__main__':
             ax=ax[i // 3, i % 3]
         )
         ax[i // 3, i % 3].set_title(model_name, fontsize=12, fontweight='bold')
-        ax[i // 3, i % 3].set_ylabel('Cumulative max FE (Eth)')
+        ax[i // 3, i % 3].set_ylabel('Cumulative max of ' + config["property_name"])
         ax[i // 3, i % 3].set_xlabel('Step')
         
     
@@ -352,11 +352,13 @@ if __name__ == '__main__':
         y='cummax FE', 
         hue='model', 
         marker='o', 
-        ms=5
+        ms=5,
+        hue_order=config["models"] + ["baseline"],
+        palette=["limegreen", "darkgreen", "blue", "darkblue", "Gray"],
     )
     plt.axvline(x=k_step, color='gray', linestyle='--')
-    plt.ylabel('Cumulative max FE (Eth)')
-    plt.xlabel('Step')
+    plt.ylabel('Cumulative max of ' + config["property_name"])
+    plt.xlabel('Step #')
     plt.legend(title='Model', loc='lower right')
     plt.tight_layout()
     plt.savefig(OUTPUT_BASE / 'active_learning_combined.png', dpi=300, bbox_inches='tight')
