@@ -16,4 +16,11 @@ default_config = {
     "current_density": None,
     "zero_eps_thickness": None,
     "t_CO2": None,
+    # LLM-based active learning settings (used when model_name="LLM")
+    "llm_model": "gemini-2.0-flash",
+    "llm_api_key_env": "GEMINI_API_KEY",  # name of the env var holding the API key
+    "llm_experiment_context": (
+        "You are an expert scientist helping to optimize an experiment. "
+        "Use your domain knowledge along with the experimental data provided to make informed suggestions."
+    ),
 }

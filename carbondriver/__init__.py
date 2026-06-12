@@ -5,6 +5,7 @@ from .config import default_config
 import pandas as pd
 import torch
 import numpy as np
+import os, json
 from typing import Tuple, Optional
 from botorch.acquisition.analytic import LogExpectedImprovement, ExpectedImprovement, ProbabilityOfImprovement, UpperConfidenceBound
 from botorch.optim import optimize_acqf
@@ -54,9 +55,11 @@ class GDEOptimizer:
             self.model = MLPModel
         elif model_name == "GP+Ph":
             self.model = MultitaskGPhysModel
+        elif model_name == "LLM":
+            self.model = "LLM"
         else:
             raise ValueError(
-                f"Unsupported model_name '{model_name}'. Supported options are 'GP', 'Ph', 'MLP', 'GP+Ph'."
+                f"Unsupported model_name '{model_name}'. Supported options are 'GP', 'Ph', 'MLP', 'GP+Ph', 'LLM'."
             )
 
         if aquisition in SUPPORTED_AFs:
@@ -315,6 +318,74 @@ class GDEOptimizer:
             )
         raise ValueError(f"Unsupported acquisition function: {self.aquisition}")
 
+    def _llm_suggest(
+        self,
+        mode: str,
+        bounds: Optional[torch.Tensor] = None,
+        possible_data: Optional[pd.DataFrame] = None,
+    ) -> dict:
+        """
+        Call the Gemini LLM API to suggest the next experiment.
+
+        :param mode: "step" for free-form suggestion within bounds, or "step_within_data" to select from candidates
+        :param bounds: tensor of shape (2, d) with parameter bounds (used in "step" mode)
+        :param possible_data: DataFrame of candidate experiments (used in "step_within_data" mode)
+        :returns: parsed JSON dict from the LLM response
+        """
+        import google.generativeai as genai
+
+        api_key = os.environ.get(self.config["llm_api_key_env"])
+        if api_key is None:
+            raise EnvironmentError(
+                f"LLM API key not found. Set the '{self.config['llm_api_key_env']}' environment variable."
+            )
+        genai.configure(api_key=api_key)
+        llm = genai.GenerativeModel(self.config["llm_model"])
+
+        context = self.config["llm_experiment_context"]
+        direction = "maximize" if self.maximize else "minimize"
+        data_str = self.df.to_string()
+
+        if mode == "step":
+            raw_bounds = self.bounds if bounds is None else bounds
+            bounds_str = "\n".join(
+                f"  {label}: [{raw_bounds[0, i].item():.4g}, {raw_bounds[1, i].item():.4g}]"
+                for i, label in enumerate(self.input_labels)
+            )
+            prompt = (
+                f"{context}\n\n"
+                f"Experimental data collected so far:\n{data_str}\n\n"
+                f"Input parameters and their allowed ranges:\n{bounds_str}\n\n"
+                f"Suggest the next experiment that will lead to {direction}ing '{self.quantity}' "
+                f"in the fewest number of experiments.\n"
+                f"Respond with ONLY a JSON object with:\n"
+                f'  parameter names mapped to their suggested values\n'
+                f'  "reason": brief explanation\n'
+                f'Example: {json.dumps({**{l: 0.0 for l in self.input_labels}, "reason": "..."})}'
+            )
+        else:  # step_within_data
+            candidates_str = possible_data.to_string()
+            prompt = (
+                f"{context}\n\n"
+                f"Experimental data collected so far:\n{data_str}\n\n"
+                f"Candidate experiments to choose from (index on the left):\n{candidates_str}\n\n"
+                f"Select the candidate that will lead to {direction}ing '{self.quantity}' "
+                f"in the fewest number of experiments.\n"
+                f"Respond with ONLY a JSON object with:\n"
+                f'  "index": integer row index of the best candidate (from the leftmost column)\n'
+                f'  "reason": brief explanation\n'
+                f'Example: {{"index": 0, "reason": "..."}}'
+            )
+
+        response = llm.generate_content(prompt)
+        text = response.text.strip()
+        # Strip markdown code fences if the model wraps its output
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        return json.loads(text.strip())
+
     def step(
         self, new_data: pd.DataFrame, bounds: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, pd.Series]:
@@ -326,6 +397,16 @@ class GDEOptimizer:
         :returns: tuple of (acquisition_function_value, next_experiment_parameters)
         """
         self.update_data(new_data)
+
+        if self.model == "LLM":
+            result = self._llm_suggest("step", bounds=bounds)
+            reason = result.pop("reason", None)
+            if reason:
+                print(f"LLM reason: {reason}")
+            self.i += 1
+            return None, pd.Series(
+                {l: result[l] for l in self.input_labels}
+            )
 
         # Determine raw bounds (always in original feature scale)
         # Use the property-created tensor by default. If the caller supplied `bounds`,
@@ -456,7 +537,18 @@ class GDEOptimizer:
         """
         
         self.update_data(new_data)
-        
+
+        if self.model == "LLM":
+            result = self._llm_suggest("step_within_data", possible_data=possible_data)
+            reason = result.get("reason")
+            if reason:
+                print(f"LLM reason: {reason}")
+            best_idx = int(result["index"])
+            self.i += 1
+            if return_metrics:
+                return None, best_idx, {}
+            return None, best_idx
+
         try:
             predictor, stats = self.get_predictor()
         except torch._C._LinAlgError:
