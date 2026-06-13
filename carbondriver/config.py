@@ -17,6 +17,7 @@ default_config = {
     "zero_eps_thickness": None,
     "t_CO2": None,
     # LLM-based active learning settings (used when model_name="LLM")
+    "llm_api": "gemini",          # "gemini", "openai", or "claude"
     "llm_model": "gemini-2.0-flash",
     "llm_api_key_env": "GEMINI_API_KEY",  # name of the env var holding the API key
     "llm_experiment_context": (
