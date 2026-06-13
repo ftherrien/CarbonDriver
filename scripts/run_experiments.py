@@ -138,7 +138,7 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
     # Get rows for chosen triplets
     train_df = df[df['triplet'].isin(chosen_triplets_ids)].copy()
     # Get rows for withheld triplets
-    withheld_df = df_triplet_means[~df_triplet_means.index.isin(chosen_triplets_ids)].copy()
+    withheld_df = df_triplet_means[~df_triplet_means.index.isin(chosen_triplets_ids)].copy().drop(columns=config["output_labels"])
 
     # Active learning loop
     iteration = 0
@@ -147,20 +147,23 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
     while len(withheld_df) > 0 and best_id not in chosen_triplets_ids:
         print(f"  Run {run_idx}, Iteration {iteration}: Evaluating acquisition function...")
         # Evaluate acquisition function
-        best_ei, best_row_idx, metrics = gde.step_within_data(train_df, withheld_df, return_metrics=True)
-        best_triplet = withheld_df.iloc[int(best_row_idx)]
+        best_ei, best_triplet, metrics = gde.step_within_data(train_df, withheld_df, return_metrics=True)
+        best_triplet = withheld_df.loc[best_triplet]
         #This line ensures that we append the new triplet data to train_df, not replacing it
         train_df = df[df['triplet'] == best_triplet.name]
         withheld_df = withheld_df.drop(index=best_triplet.name)
         
-        expected_improvements.append(float(best_ei))
+        expected_improvements.append(best_ei if best_ei is None else float(best_ei))
         nll_values.append(metrics.get('nll', None))
         loss_values.append(metrics.get('loss', None))
         chosen_triplets_ids.append(int(best_triplet.name))
 
         current_best = df_triplet_means.loc[chosen_triplets_ids][config["property_name"]].max().item()
         bests.append(current_best)
-        print(f"    ✓ Selected triplet {int(best_triplet.name)}, Best FE: {current_best:.4f}, EI: {best_ei:.6f}, Remaining candidates: {len(withheld_df)}")
+        if best_ei is not None:
+            print(f"    ✓ Selected triplet {int(best_triplet.name)}, Best FE: {current_best:.4f}, EI: {best_ei:.6f}, Remaining candidates: {len(withheld_df)}")
+        else:
+            print(f"    ✓ Selected triplet {int(best_triplet.name)}, Best FE: {current_best:.4f}, EI: None, Remaining candidates: {len(withheld_df)}")
         
         iteration += 1
         

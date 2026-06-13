@@ -124,7 +124,9 @@ class GDEOptimizer:
         if data is None:
             data = self.df
 
-        df_clean = data.loc[:, self.input_labels + self.output_labels]
+        output_labels = [col for col in self.output_labels if col in data.columns]
+
+        df_clean = data.loc[:, self.input_labels + output_labels]
 
         if update_stats:
             if self.config["normalize_inputs"]:
@@ -132,8 +134,8 @@ class GDEOptimizer:
                 self._stds.loc[self.input_labels] = df_clean.loc[:,self.input_labels].std(ddof=0)
                 
             if self.config["normalize_outputs"]:
-                self._means.loc[self.output_labels] = df_clean.loc[:,self.output_labels].mean()
-                self._stds.loc[self.output_labels] = df_clean.loc[:,self.output_labels].std(ddof=0)
+                self._means.loc[output_labels] = df_clean.loc[:,output_labels].mean()
+                self._stds.loc[output_labels] = df_clean.loc[:,output_labels].std(ddof=0)
 
             if self._stds.min() < 1e-10:
                 print(
@@ -144,7 +146,7 @@ class GDEOptimizer:
         df_clean = (df_clean - self._means) / self._stds
 
         X = torch.tensor(df_clean.loc[:, self.input_labels].values, dtype=torch.float32)
-        y = torch.tensor(df_clean.loc[:, self.output_labels].values, dtype=torch.float32)
+        y = torch.tensor(df_clean.loc[:, output_labels].values, dtype=torch.float32)
 
         return X, y
 
@@ -364,7 +366,7 @@ class GDEOptimizer:
                 f"Select the candidate that will lead to {direction}ing '{self.quantity}' "
                 f"in the fewest number of experiments.\n"
                 f"Respond with ONLY a JSON object with:\n"
-                f'  "index": integer row index of the best candidate (from the leftmost column)\n'
+                f'  "index": index of the best candidate in the dataframe (leftmost column)\n'
                 f'  "reason": brief explanation\n'
                 f'Example: {{"index": 0, "reason": "..."}}'
             )
@@ -396,18 +398,14 @@ class GDEOptimizer:
         system = self.config["llm_experiment_context"]
         user = self._create_prompt(mode, bounds=bounds, possible_data=possible_data)
 
-        api_key = os.environ.get(self.config["llm_api_key_env"])
-        if api_key is None:
-            raise EnvironmentError(
-                f"LLM API key not found. Set the '{self.config['llm_api_key_env']}' environment variable."
-            )
+        api_key = self.config.get("llm_api_key", None)
 
         if api == "gemini":
-            import google.generativeai as genai
-            genai.configure(api_key=api_key)
-            response = genai.GenerativeModel(
-                self.config["llm_model"], system_instruction=system
-            ).generate_content(user)
+            from google import genai
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model=self.config["llm_model"],
+                contents=[system, user])
             text = response.text
 
         elif api == "openai":
@@ -588,17 +586,21 @@ class GDEOptimizer:
         
         self.update_data(new_data)
 
+        if any([(label in possible_data.columns) for label in self.output_labels]):
+            print("Warning: possible_data contains output columns. Are you sure you input the right data? Labels will be ignored.")
+            possible_data = possible_data.drop(columns=self.output_labels, errors="ignore")
+
         if self.model == "LLM":
             result = self._llm_suggest("step_within_data", possible_data=possible_data)
             reason = result.get("reason")
-            best_idx = int(result["index"])
-            self.llm_history.append({"step": self.i, "suggestion": best_idx, "reason": reason})
+            best_df_index = result["index"]
+            self.llm_history.append({"step": self.i, "suggestion": best_df_index, "reason": reason})
             if reason:
                 print(f"LLM reason: {reason}")
             self.i += 1
             if return_metrics:
-                return None, best_idx, {}
-            return None, best_idx
+                return None, best_df_index, {}
+            return None, best_df_index
 
         try:
             predictor, stats = self.get_predictor()
@@ -654,6 +656,7 @@ class GDEOptimizer:
             raise RuntimeError("AF returned non-tensor scores, expected torch.Tensor")
         print(f"Target scores : {target_scores.tolist()}")
         best_idx = int(target_scores.argmax().item())
+        best_df_index = possible_data.iloc[best_idx].name
         best_ei = float(target_scores[best_idx].item())
 
         # Extract final training metrics from stats
@@ -678,6 +681,6 @@ class GDEOptimizer:
             metrics["loss"] = np.nan
 
         if return_metrics:
-            return best_ei, best_idx, metrics
+            return best_ei, best_df_index, metrics
         else:
-            return best_ei, best_idx
+            return best_ei, best_df_index

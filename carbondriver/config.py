@@ -18,8 +18,8 @@ default_config = {
     "t_CO2": None,
     # LLM-based active learning settings (used when model_name="LLM")
     "llm_api": "gemini",          # "gemini", "openai", or "claude"
-    "llm_model": "gemini-2.0-flash",
-    "llm_api_key_env": "GEMINI_API_KEY",  # name of the env var holding the API key
+    "llm_model": "gemini-3.5-flash",
+    "llm_api_key": None,
     "llm_experiment_context": (
         "You are an expert scientist helping to optimize an experiment. "
         "Use your domain knowledge along with the experimental data provided to make informed suggestions."
