@@ -86,6 +86,8 @@ class GDEOptimizer:
 
         self.df = pd.DataFrame()
 
+        self.llm_history = []  # list of {"step": i, "suggestion": ..., "reason": ...}
+
         self._bounds = bounds
 
         if input_labels is None:
@@ -346,6 +348,14 @@ class GDEOptimizer:
         direction = "maximize" if self.maximize else "minimize"
         data_str = self.df.to_string()
 
+        history_str = ""
+        if self.llm_history:
+            entries = "\n".join(
+                f"  Step {e['step']}: suggested {e['suggestion']} — reason: {e['reason']}"
+                for e in self.llm_history
+            )
+            history_str = f"\nYour previous suggestions and reasoning:\n{entries}\n"
+
         if mode == "step":
             raw_bounds = self.bounds if bounds is None else bounds
             bounds_str = "\n".join(
@@ -353,7 +363,8 @@ class GDEOptimizer:
                 for i, label in enumerate(self.input_labels)
             )
             prompt = (
-                f"{context}\n\n"
+                f"{context}\n"
+                f"{history_str}\n"
                 f"Experimental data collected so far:\n{data_str}\n\n"
                 f"Input parameters and their allowed ranges:\n{bounds_str}\n\n"
                 f"Suggest the next experiment that will lead to {direction}ing '{self.quantity}' "
@@ -366,7 +377,8 @@ class GDEOptimizer:
         else:  # step_within_data
             candidates_str = possible_data.to_string()
             prompt = (
-                f"{context}\n\n"
+                f"{context}\n"
+                f"{history_str}\n"
                 f"Experimental data collected so far:\n{data_str}\n\n"
                 f"Candidate experiments to choose from (index on the left):\n{candidates_str}\n\n"
                 f"Select the candidate that will lead to {direction}ing '{self.quantity}' "
@@ -401,12 +413,12 @@ class GDEOptimizer:
         if self.model == "LLM":
             result = self._llm_suggest("step", bounds=bounds)
             reason = result.pop("reason", None)
+            suggestion = {l: result[l] for l in self.input_labels}
+            self.llm_history.append({"step": self.i, "suggestion": suggestion, "reason": reason})
             if reason:
                 print(f"LLM reason: {reason}")
             self.i += 1
-            return None, pd.Series(
-                {l: result[l] for l in self.input_labels}
-            )
+            return None, pd.Series(suggestion)
 
         # Determine raw bounds (always in original feature scale)
         # Use the property-created tensor by default. If the caller supplied `bounds`,
@@ -541,9 +553,10 @@ class GDEOptimizer:
         if self.model == "LLM":
             result = self._llm_suggest("step_within_data", possible_data=possible_data)
             reason = result.get("reason")
+            best_idx = int(result["index"])
+            self.llm_history.append({"step": self.i, "suggestion": best_idx, "reason": reason})
             if reason:
                 print(f"LLM reason: {reason}")
-            best_idx = int(result["index"])
             self.i += 1
             if return_metrics:
                 return None, best_idx, {}
