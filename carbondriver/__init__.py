@@ -320,33 +320,14 @@ class GDEOptimizer:
             )
         raise ValueError(f"Unsupported acquisition function: {self.aquisition}")
 
-    def _llm_suggest(
+    def _create_prompt(
         self,
         mode: str,
         bounds: Optional[torch.Tensor] = None,
         possible_data: Optional[pd.DataFrame] = None,
-    ) -> dict:
-        """
-        Call the Gemini LLM API to suggest the next experiment.
-
-        :param mode: "step" for free-form suggestion within bounds, or "step_within_data" to select from candidates
-        :param bounds: tensor of shape (2, d) with parameter bounds (used in "step" mode)
-        :param possible_data: DataFrame of candidate experiments (used in "step_within_data" mode)
-        :returns: parsed JSON dict from the LLM response
-        """
-        import google.generativeai as genai
-
-        api_key = os.environ.get(self.config["llm_api_key_env"])
-        if api_key is None:
-            raise EnvironmentError(
-                f"LLM API key not found. Set the '{self.config['llm_api_key_env']}' environment variable."
-            )
-        genai.configure(api_key=api_key)
-        llm = genai.GenerativeModel(self.config["llm_model"])
-
-        context = self.config["llm_experiment_context"]
+    ) -> str:
+        """Build the user prompt from history, data, and task description."""
         direction = "maximize" if self.maximize else "minimize"
-        data_str = self.df.to_string()
 
         history_str = ""
         if self.llm_history:
@@ -354,7 +335,9 @@ class GDEOptimizer:
                 f"  Step {e['step']}: suggested {e['suggestion']} — reason: {e['reason']}"
                 for e in self.llm_history
             )
-            history_str = f"\nYour previous suggestions and reasoning:\n{entries}\n"
+            history_str = f"Your previous suggestions and reasoning:\n{entries}\n\n"
+
+        data_str = f"Experimental data collected so far:\n{self.df.to_string()}\n\n"
 
         if mode == "step":
             raw_bounds = self.bounds if bounds is None else bounds
@@ -362,10 +345,9 @@ class GDEOptimizer:
                 f"  {label}: [{raw_bounds[0, i].item():.4g}, {raw_bounds[1, i].item():.4g}]"
                 for i, label in enumerate(self.input_labels)
             )
-            prompt = (
-                f"{context}\n"
-                f"{history_str}\n"
-                f"Experimental data collected so far:\n{data_str}\n\n"
+            return (
+                f"{history_str}"
+                f"{data_str}"
                 f"Input parameters and their allowed ranges:\n{bounds_str}\n\n"
                 f"Suggest the next experiment that will lead to {direction}ing '{self.quantity}' "
                 f"in the fewest number of experiments.\n"
@@ -375,12 +357,10 @@ class GDEOptimizer:
                 f'Example: {json.dumps({**{l: 0.0 for l in self.input_labels}, "reason": "..."})}'
             )
         else:  # step_within_data
-            candidates_str = possible_data.to_string()
-            prompt = (
-                f"{context}\n"
-                f"{history_str}\n"
-                f"Experimental data collected so far:\n{data_str}\n\n"
-                f"Candidate experiments to choose from (index on the left):\n{candidates_str}\n\n"
+            return (
+                f"{history_str}"
+                f"{data_str}"
+                f"Candidate experiments to choose from (index on the left):\n{possible_data.to_string()}\n\n"
                 f"Select the candidate that will lead to {direction}ing '{self.quantity}' "
                 f"in the fewest number of experiments.\n"
                 f"Respond with ONLY a JSON object with:\n"
@@ -389,14 +369,72 @@ class GDEOptimizer:
                 f'Example: {{"index": 0, "reason": "..."}}'
             )
 
-        response = llm.generate_content(prompt)
-        text = response.text.strip()
-        # Strip markdown code fences if the model wraps its output
+    def _read_response(self, text: str) -> dict:
+        """Strip markdown code fences from LLM output and parse as JSON."""
+        text = text.strip()
         if text.startswith("```"):
             text = text.split("```")[1]
             if text.startswith("json"):
                 text = text[4:]
         return json.loads(text.strip())
+
+    def _llm_suggest(
+        self,
+        mode: str,
+        bounds: Optional[torch.Tensor] = None,
+        possible_data: Optional[pd.DataFrame] = None,
+    ) -> dict:
+        """
+        Call the configured LLM API to suggest the next experiment.
+
+        :param mode: "step" for free-form suggestion within bounds, or "step_within_data" to select from candidates
+        :param bounds: tensor of shape (2, d) with parameter bounds (used in "step" mode)
+        :param possible_data: DataFrame of candidate experiments (used in "step_within_data" mode)
+        :returns: parsed JSON dict from the LLM response
+        """
+        api = self.config.get("llm_api", "gemini")
+        system = self.config["llm_experiment_context"]
+        user = self._create_prompt(mode, bounds=bounds, possible_data=possible_data)
+
+        api_key = os.environ.get(self.config["llm_api_key_env"])
+        if api_key is None:
+            raise EnvironmentError(
+                f"LLM API key not found. Set the '{self.config['llm_api_key_env']}' environment variable."
+            )
+
+        if api == "gemini":
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+            response = genai.GenerativeModel(
+                self.config["llm_model"], system_instruction=system
+            ).generate_content(user)
+            text = response.text
+
+        elif api == "openai":
+            from openai import OpenAI
+            response = OpenAI(api_key=api_key).chat.completions.create(
+                model=self.config["llm_model"],
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user",   "content": user},
+                ],
+            )
+            text = response.choices[0].message.content
+
+        elif api == "claude":
+            import anthropic
+            response = anthropic.Anthropic(api_key=api_key).messages.create(
+                model=self.config["llm_model"],
+                max_tokens=1024,
+                system=system,
+                messages=[{"role": "user", "content": user}],
+            )
+            text = response.content[0].text
+
+        else:
+            raise ValueError(f"Unsupported llm_api '{api}'. Choose 'gemini', 'openai', or 'claude'.")
+
+        return self._read_response(text)
 
     def step(
         self, new_data: pd.DataFrame, bounds: Optional[torch.Tensor] = None
