@@ -14,6 +14,8 @@ from typing import Tuple, Optional, Literal
 import torch
 import yaml
 import sys
+import argparse
+
 
 def choose_base_inds_numpy(y: np.ndarray, num_choose: int, how: Literal['max','min'] = 'max', strategy: Literal['uniform','skewed'] = 'uniform', seed: Optional[int] = None):
     ind = np.argsort(y)
@@ -32,6 +34,81 @@ def choose_base_inds_numpy(y: np.ndarray, num_choose: int, how: Literal['max','m
     rng = np.random.default_rng(seed)
     return rng.choice(ind, size=num_choose, replace=False, p=p)
 
+def pretrain_on_gas(model_name: str, config: dict, output_dir: Path) -> Optional[str]:
+    """Pre-train a model on the full gas dataset and save weights for transfer learning.
+
+    Trains a single model instance (not the full 50-model ensemble) on all gas data,
+    then saves its state_dict for use as weight initialization in bicarb experiments.
+
+    :param model_name: model to pre-train (Ph, MLP, or GP+Ph)
+    :param config: experiment config (used for training params)
+    :param output_dir: directory to save pretrained weights
+    :returns: path to saved weights file, or None if model doesn't support transfer
+    """
+    if model_name not in ("Ph", "MLP", "GP+Ph"):
+        return None
+
+    weights_dir = output_dir / "gas_pretrained"
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    weights_path = weights_dir / f"{model_name}_weights.pt"
+
+    if weights_path.exists():
+        print(f"  Pre-trained weights already exist at {weights_path}")
+        return str(weights_path)
+
+    print(f"  Pre-training {model_name} on gas data for transfer learning...")
+    gas_df = load_gas_data()
+    gas_output_labels = ["FE (Eth)", "FE (CO)"]
+    gas_input_labels = ["AgCu Ratio", "Naf vol (ul)", "Sust vol (ul)", "Zero_eps_thickness", "Catalyst mass loading"]
+
+    from carbondriver.train import train_Ph_model
+    from carbondriver.models import PhModel as PhModelCls, MLPModel as MLPModelCls
+
+    gas_config = config.copy()
+    gas_config["dataset"] = "gas"
+    gas_config["system_phase"] = "gas"
+    gas_config["normalize_inputs"] = True
+    gas_config["normalize_outputs"] = False
+
+    df_clean = gas_df[gas_input_labels + gas_output_labels].dropna()
+    means = df_clean.mean()
+    stds = df_clean.std(ddof=0)
+
+    if stds[gas_input_labels].min() < 1e-10:
+        stds.loc[stds.index.isin(gas_input_labels) & (stds < 1e-10)] = 1
+
+    X_gas = torch.tensor(((df_clean[gas_input_labels] - means[gas_input_labels]) / stds[gas_input_labels]).values, dtype=torch.float32)
+    y_gas = torch.tensor(df_clean[gas_output_labels].values, dtype=torch.float32)
+
+    mu = float(means["Zero_eps_thickness"])
+    sigma = float(stds["Zero_eps_thickness"])
+    zlt_index = gas_input_labels.index("Zero_eps_thickness")
+
+    if model_name in ("Ph", "GP+Ph"):
+        model_constructor = lambda: PhModelCls(
+            zlt_mu=mu,
+            zlt_sigma=sigma,
+            current_target=233,
+            config=gas_config,
+            n_inputs=len(gas_input_labels),
+            zlt_index=zlt_index,
+            system_phase="gas",
+        )
+    elif model_name == "MLP":
+        model_constructor = lambda: MLPModelCls(
+            n_inputs=len(gas_input_labels),
+            n_outputs=len(gas_output_labels),
+        )
+
+    _, trained_model = train_Ph_model(
+        X_gas, y_gas, model_constructor,
+        num_iter=config.get("num_iter", 101),
+    )
+
+    torch.save(trained_model.state_dict(), weights_path)
+    print(f"  Saved pre-trained weights to {weights_path}")
+    return str(weights_path)
+
 def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
     """Run a single active learning experiment for the given model."""
     
@@ -45,9 +122,10 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
     
     print(f"  [Step 2/3] Initializing {model_name} optimizer...")
     # Initialize optimizer
+    acquisition = config.get("acquisition", "EI")
     gde = GDEOptimizer(
         model_name=model_name,
-        aquisition="EI",
+        aquisition=acquisition,
         quantity=config["property_name"],
         maximize=True,
         output_dir=str(run_dir),
@@ -73,7 +151,7 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
     # Track results
     expected_improvements = [None] * len(chosen_triplets_ids)
     nll_values = [None] * len(chosen_triplets_ids)  # NLL from training
-    loss_values = [None] * len(chosen_triplets_ids)  # Loss (MSE proxy) from training
+    loss_values = [None] * len(chosen_triplets_ids)
     # Get rows for chosen triplets
     train_df = df[df['triplet'].isin(chosen_triplets_ids)].copy()
     # Get rows for withheld triplets
@@ -109,7 +187,7 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
         'chosen_triplets': chosen_triplets_ids,
         'expected_improvements': expected_improvements,
         'nll': nll_values,
-        'loss': loss_values
+        'loss': loss_values,
     })
     results_df.to_csv(run_dir / 'chosen_triplets.csv')
     print(f"  Results saved to {run_dir / 'chosen_triplets.csv'}")
@@ -184,7 +262,6 @@ def create_random_baseline(n_runs):
         current_run['model'] = "baseline"
 
         current_run = current_run[current_run['step'] >= 0]
-        
         all_df.append(current_run)
     
     print(f"    ✓ Created {n_runs} baseline runs")
@@ -195,35 +272,53 @@ def create_random_baseline(n_runs):
 # ============================================================================
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Run active learning experiments')
+    parser.add_argument('--no-plot', action='store_true', help='Skip plotting')
+    parser.add_argument('config', type=str, help='Path to YAML config file')
+    args = parser.parse_args()
 
     print("="*70)
     print("ACTIVE LEARNING EXPERIMENT SUITE")
     print("="*70)
     
     print("\n[1/6] Loading configuration...")
-    with open(sys.argv[1]) as f:
+    with open(args.config) as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
     
     OUTPUT_BASE = Path(config["run_name"])
     print(f"  Output directory: {OUTPUT_BASE}")
-    OUTPUT_BASE.mkdir(exist_ok=True)
+    OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
 
+    k_step = config.get('k_step', 9)
+    
     # Load data once
     print("[2/6] Loading experimental data...")
     dataset = config.get("dataset", "gas")
+    data_file = config.get("data_file", None)
+    if data_file is not None:
+        p = Path(data_file)
+        if not p.is_absolute():
+            p = Path(__file__).resolve().parent / p
+        data_file = p
     if dataset == "bicarb":
-        df = load_bicarb_data()
-        output_labels = ["FE_CO", "CO2 utilization"]
+        df = load_bicarb_data(filepath=data_file)
     elif dataset == "gas":
-        df = load_gas_data()
-        output_labels = ["FE (Eth)", "FE (CO)"]
+        df = load_gas_data(file=data_file)
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
     
     print(f"  ✓ Loaded {len(df)} data points from {dataset} dataset")
     
+    # Determine output labels based on dataset
+    if dataset == "bicarb":
+        output_labels = ["FE_CO", "CO2 utilization"]
+    elif dataset == "gas":
+        output_labels = ["FE (Eth)", "FE (CO)"]
+    else:
+        raise ValueError(f"Unknown dataset: {dataset}")
+
     # Determine input labels from non-constant columns
-    exclude_cols = {'triplet'} | set(output_labels)
+    exclude_cols = {"triplet"} | set(output_labels)
     input_labels = [col for col in df.columns 
                     if col not in exclude_cols and df[col].nunique() > 1]
     print(f"  Input features: {input_labels}")
@@ -231,10 +326,19 @@ if __name__ == '__main__':
     df = df[df.loc[:,output_labels].notna().all(axis=1)]
 
     df_triplet_means = df.groupby('triplet').mean()
-    best_id = int(df_triplet_means[config["property_name"]].idxmax())
-    
+    best_id = int(df_triplet_means[config["property_name"]].idxmax())    
+
     config["input_labels"] = input_labels
     config["output_labels"] = output_labels
+    
+    # Pre-training for transfer learning (gas → bicarb)
+    if config.get("pretrained_weights") == "auto" and dataset == "bicarb":
+        print("\n[2.5/6] Pre-training on gas data for transfer learning...")
+        for model in config["models"]:
+            weights_path = pretrain_on_gas(model, config, OUTPUT_BASE)
+            if weights_path is not None:
+                print(f"  Transfer weights for {model}: {weights_path}")
+        config["pretrained_weights"] = str(OUTPUT_BASE / "gas_pretrained")
     
     if not config["use_existing_results"]:
         
@@ -242,7 +346,6 @@ if __name__ == '__main__':
         torch.manual_seed(config["torch_seed"])
         print(f"  Set torch seed to {config['torch_seed']}")
         
-        # Run experiments for all models
         total_runs = len(config["models"]) * len(list(config.get("runs", range(config["num_runs"]))))
         run_num = 0
         
@@ -260,8 +363,11 @@ if __name__ == '__main__':
         print("\n" + "="*70)
         print("✓ All experiments completed!")
         print("="*70)
+        if args.no_plot:
+            print("\nSkipping plots (--no-plot flag set)")
+            sys.exit(0)
         print("\nGenerating plots...")
-    else:
+    if config["use_existing_results"]:
         print("\n[3/6] Using existing results (use_existing_results=True)")
     
     # ========================================================================
@@ -274,7 +380,7 @@ if __name__ == '__main__':
     combined_csv = OUTPUT_BASE / 'all_runs_combined.csv'
 
     if not combined_csv.exists():
-    
+
         for i, model_name in enumerate(config["models"]):
             print(f"  Processing subplot for {model_name}...")
             _df = process_runs_mean(model_name)
@@ -284,14 +390,14 @@ if __name__ == '__main__':
         
         all_df = pd.concat(all_data, axis=0)
         
-        all_df.to_csv(OUTPUT_BASE / 'all_runs_combined.csv', index=False)
+        all_df.to_csv(combined_csv, index=False)
 
     else:
 
         print(f"  Loading combined data from {combined_csv}...")
         all_df = pd.read_csv(combined_csv)
 
-    baseline_df = create_random_baseline(n_runs=config["num_runs"])
+    baseline_df = create_random_baseline(n_runs=config["num_runs"]*100)
 
     all_df_baseline = pd.concat([all_df, baseline_df], axis=0)
         
@@ -322,7 +428,7 @@ if __name__ == '__main__':
     # ========================================================================
     print("\n[5/6] Generating combined model comparison plot...")
     
-    plt.figure(figsize=(8, 8))
+    plt.figure(figsize=(5, 5))
     sns.lineplot(
         data=all_df_baseline, 
         x='step', 
@@ -331,6 +437,7 @@ if __name__ == '__main__':
         marker='o', 
         ms=5
     )
+    plt.axvline(x=k_step, color='gray', linestyle='--')
     plt.ylabel('Cumulative max FE (Eth)')
     plt.xlabel('Step')
     plt.legend(title='Model', loc='lower right')
@@ -377,7 +484,7 @@ if __name__ == '__main__':
             hue='model',
             errorbar='sd'
         )
-        plt.ylabel('Loss (Neg. Marginal Log-Likelihood for GP)')
+        plt.ylabel('Training loss')
         plt.xlabel('Step')
         plt.title('Training Loss vs Active Learning Step')
         plt.legend(title='Model', bbox_to_anchor=(1.05, 1), loc='upper left')
@@ -396,56 +503,57 @@ if __name__ == '__main__':
 
     stats = dict()
     
-    for model_name in config["models"]:
+    for model_name in all_df_baseline["model"].unique():
         print(f"\n{model_name.upper()}:")
         steps_to_finish = []
         final_nlls = []
-        final_losses = []
+        val_at_kstep = []
 
-        df_model = all_df.loc[all_df["model"]==model_name]
+        df_model = all_df_baseline.loc[all_df_baseline["model"]==model_name]
         
         for run in df_model['dname'].unique():
             chosen_df = df_model[df_model['dname'] == run]
             
-            # Collect final NLL and loss values (last non-null).
-            # Simplified: try to append the last non-NaN value for each column,
-            # skip silently if the column is missing or contains only NaNs.
-            for col, storage in (('nll', final_nlls), ('loss', final_losses)):
-                try:
-                    storage.append(chosen_df[col].dropna().iat[-1])
-                except Exception:
-                    # missing column or all-NaN -> skip
-                    pass
+            # Collect final NLL value (last non-NaN).
+            try:
+                final_nlls.append(chosen_df['nll'].dropna().iat[-1])
+            except Exception:
+                # missing column or all-NaN -> skip
+                pass
             
             # Find step where cummax FE becomes max
-            filtered = chosen_df[chosen_df['cummax FE'] >= df_triplet_means.loc[best_id, config["property_name"]]]
+            filtered = chosen_df[chosen_df['cummax FE'] >= df_triplet_means.loc[best_id, config["property_name"]] - 1e-8]
             if not filtered.empty:
                 # First step where threshold was crossed
                 step_to_max = filtered['step'].iloc[0]
                 # Record steps to finish
+                if step_to_max == 0:
+                    print(f"    Run {run} started at max FE (step 0).")
                 steps_to_finish.append(step_to_max)
             else:
                 print(f"    Run {run} did not reach the target FE threshold.")
+
+            val_at_kstep.append(chosen_df[chosen_df['step'] == k_step]['cummax FE'])
+            
                 
         if steps_to_finish:
             sf = np.array(steps_to_finish)
             sf[sf < 0] = 0
             mean_steps = np.mean(sf)
             std_steps = np.std(sf)
-            accel_factor = ((len(df_triplet_means)-3+1)/2) / mean_steps if mean_steps > 0 else np.inf
+            accel_factor = ((len(df_triplet_means)+1)/2-3) / mean_steps if mean_steps > 0 else np.inf
             
             print(f"  Runs analyzed: {len(df_model['dname'].unique())}")
             print(f"  Mean steps to max FE: {mean_steps:.2f} ± {std_steps:.2f}")
-            stats[model_name] = {"Mean Steps": mean_steps, "Std Steps": std_steps, "Acceleration Factor": accel_factor} 
-            if final_losses:
-                print(f"  Final MSE (loss): {np.mean(final_losses):.4f} ± {np.std(final_losses):.4f}")
-                stats[model_name]["Final MSE mean"] = np.mean(final_losses)
-                stats[model_name]["Final MSE std"] = np.std(final_losses)
+
+            stats[model_name] = {"Mean Steps": mean_steps, "Std Steps": std_steps, "Acceleration Factor": accel_factor, "Val at step k": np.mean(val_at_kstep), "Val at step k std": np.std(val_at_kstep)}
+
             if final_nlls:
                 print(f"  Final NLL: {np.mean(final_nlls):.4f} ± {np.std(final_nlls):.4f}")
                 stats[model_name]["Final NLL mean"] = np.mean(final_nlls)
                 stats[model_name]["Final NLL std"] = np.std(final_nlls)
             print(f"  Acceleration factor: {accel_factor:.2f}x")
+            print(f"  FE at step {k_step}: {np.mean(val_at_kstep):.4f} ± {np.std(val_at_kstep):.4f}")
             
         else:
             print(f"  No data available for {model_name}") 

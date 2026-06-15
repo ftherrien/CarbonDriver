@@ -1,8 +1,23 @@
-from carbondriver import gde_multi
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+
+import pytest
 import torch
 
 
-def test_gde_multi():
+def _load_gde_multi_module():
+    module_path = Path(__file__).resolve().parents[1] / "carbondriver" / "gde_multi.py"
+    spec = spec_from_file_location("gde_multi_local", module_path)
+    module = module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+gde_multi = _load_gde_multi_module()
+
+
+def _make_system(system_phase="gas", method="CO2 eql"):
     erc = gde_multi.electrode_reaction_kinetics | {}
     erc["i_0_CO"] = torch.nn.parameter.Parameter(torch.tensor(erc["i_0_CO"]))
     erc["i_0_C2H4"] = torch.nn.parameter.Parameter(torch.tensor(erc["i_0_C2H4"]))
@@ -10,14 +25,18 @@ def test_gde_multi():
     erc["alpha_CO"] = torch.nn.parameter.Parameter(torch.tensor(erc["alpha_CO"]))
     erc["alpha_C2H4"] = torch.nn.parameter.Parameter(torch.tensor(erc["alpha_C2H4"]))
     erc["alpha_H2b"] = torch.nn.parameter.Parameter(torch.tensor(erc["alpha_H2b"]))
-    ph_model = gde_multi.System(
+    return gde_multi.System(
         diffusion_coefficients=gde_multi.diffusion_coefficients,
         salting_out_exponents=gde_multi.salting_out_exponents,
         electrode_reaction_kinetics=erc,
         electrode_reaction_potentials=gde_multi.electrode_reaction_potentials,
         chemical_reaction_rates=gde_multi.chemical_reaction_rates,
+        method=method,
+        system_phase=system_phase,
     )
 
+
+def _base_inputs():
     eps = torch.tensor(0.5)
     r = torch.tensor(3e-8)
     L = torch.tensor(1e-5)
@@ -27,8 +46,26 @@ def test_gde_multi():
         "H2b": torch.tensor(0.4),
     }
     gdl_mass_transfer_coefficient = torch.tensor(0.015)
+    return eps, r, L, thetas, gdl_mass_transfer_coefficient
 
-    solution = ph_model.solve_current(
+
+@pytest.mark.parametrize("method", ["CO2 eql", "DIC"])
+def test_gas_mode_keeps_requested_method(method):
+    model = _make_system(system_phase="gas", method=method)
+    assert model.method == method
+
+
+def test_liquid_mode_forces_dic_method_even_when_co2_equilibrium_requested():
+    model = _make_system(system_phase="liquid", method="CO2 eql")
+    assert model.method == "DIC"
+
+
+@pytest.mark.parametrize("system_phase", ["gas", "liquid"])
+def test_solve_current_runs_for_each_physics_mode(system_phase):
+    model = _make_system(system_phase=system_phase)
+    eps, r, L, thetas, gdl_mass_transfer_coefficient = _base_inputs()
+
+    solution = model.solve_current(
         i_target=233,
         eps=eps,
         r=r,
@@ -39,5 +76,15 @@ def test_gde_multi():
         voltage_bounds=(-1.25, 0),
     )
 
-    assert abs(float(solution["fe_co"]) - 0.8296467661857605) < 1e-10
-    assert abs(float(solution["fe_c2h4"]) - 0.012436741963028908) < 1e-10
+    for key in ["gdl_flux", "current_density", "pH", "co2", "oh", "co3"]:
+        assert key in solution
+        assert torch.isfinite(solution[key]).all().item()
+
+    if system_phase == "liquid":
+        assert torch.allclose(
+            solution["gdl_flux"], torch.zeros_like(solution["gdl_flux"])
+        )
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))

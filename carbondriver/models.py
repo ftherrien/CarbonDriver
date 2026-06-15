@@ -1,4 +1,4 @@
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, Literal
 import torch
 import gpytorch
 from carbondriver import gde_multi
@@ -31,7 +31,10 @@ class PhModel(torch.nn.Module):
         current_target: float = 200,
         dropout: float = 0.1,
         ldim: int = 64,
+        n_inputs: int = 5,
+        zlt_index: int = 3,
         config: Optional[Dict[str, Any]] = None,
+        system_phase: Literal["gas", "liquid"] = "gas",
     ) -> None:
         """
         :param zlt_mu: mean of Zero_eps_thickness for normalization
@@ -39,11 +42,18 @@ class PhModel(torch.nn.Module):
         :param current_target: target current density for electrode simulation
         :param dropout: dropout probability
         :param ldim: hidden layer dimension
+        :param n_inputs: number of input features
+        :param zlt_index: index of Zero_eps_thickness in the input vector
         :param config: configuration dict with 'normalize_inputs' flag
+        :param system_phase: phase of the electrochemical system ('gas' or 'liquid')
         """
         super().__init__()
+        if n_inputs < 1:
+            raise ValueError("n_inputs must be >= 1")
+        if zlt_index < 0 or zlt_index >= n_inputs:
+            raise ValueError("zlt_index must be within [0, n_inputs)")
         self.net = torch.nn.Sequential(
-            torch.nn.Linear(5, ldim),
+            torch.nn.Linear(n_inputs, ldim),
             torch.nn.ReLU(),
             torch.nn.Dropout(dropout),
             torch.nn.Linear(ldim, ldim),
@@ -70,11 +80,14 @@ class PhModel(torch.nn.Module):
             electrode_reaction_kinetics=erc,
             electrode_reaction_potentials=gde_multi.electrode_reaction_potentials,
             chemical_reaction_rates=gde_multi.chemical_reaction_rates,
+            system_phase=system_phase,
         )
         self.softmax = torch.nn.Softmax(dim=1)
         # zero-eps thickness normalization stats
         self.zlt_mu = float(zlt_mu)
         self.zlt_sigma = float(zlt_sigma)
+        self.n_inputs = int(n_inputs)
+        self.zlt_index = int(zlt_index)
         self.current_target = current_target
         # configuration (normalization status is read from here only)
         self.config = config or {"normalize_inputs": False}
@@ -85,9 +98,13 @@ class PhModel(torch.nn.Module):
         """
         Predict Faradaic efficiency for given experimental parameters.
 
-        :param x: input features of shape (batch, 5) [AgCu Ratio, Naf vol, Sust vol, Zero_eps_thickness, Catalyst mass loading]
+        :param x: input features of shape (batch, n_inputs)
         :returns: predicted FE values of shape (batch, 2) [FE(C2H4), FE(CO)]
         """
+        if x.shape[-1] != self.n_inputs:
+            raise ValueError(
+                f"Expected {self.n_inputs} input features, got {x.shape[-1]}"
+            )
         # increment and print persistent forward counter
         self._forward_counter += 1
         # columns of x: AgCu Ratio, Naf vol (ul), Sust vol (ul), Zero_eps_thickness, Catalyst mass loading
@@ -97,9 +114,9 @@ class PhModel(torch.nn.Module):
 
         # If inputs are normalized, denormalize Zero_eps_thickness (feature index 3)
         if bool(self.config.get("normalize_inputs", False)):
-            zlt = (x[..., 3] * self.zlt_sigma + self.zlt_mu).view(-1, 1)
+            zlt = (x[..., self.zlt_index] * self.zlt_sigma + self.zlt_mu).view(-1, 1)
         else:
-            zlt = x[..., 3].view(-1, 1)
+            zlt = x[..., self.zlt_index].view(-1, 1)
         # Prevent division by zero in L calculation
         L = zlt / (1 - eps)
         K_dl_factor = torch.exp(latents[..., [2]])

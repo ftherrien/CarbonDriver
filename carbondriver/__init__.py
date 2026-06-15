@@ -6,12 +6,59 @@ import pandas as pd
 import torch
 import numpy as np
 from typing import Tuple, Optional
-from botorch.acquisition.analytic import LogExpectedImprovement, ExpectedImprovement
+from botorch.acquisition.analytic import LogExpectedImprovement, ExpectedImprovement, ProbabilityOfImprovement, UpperConfidenceBound
 from botorch.optim import optimize_acqf
 from botorch.acquisition.objective import ScalarizedPosteriorTransform
 import warnings
+import gpytorch
 
-SUPPORTED_AFs = ["EI", "logEI"]
+SUPPORTED_AFs = ["EI", "logEI", "PI", "UCB"]
+
+
+def load_compatible_state_dict(
+    model: torch.nn.Module,
+    source_state_dict: dict,
+) -> None:
+    """Load weights from source_state_dict into model, skipping mismatched layers.
+
+    Transfers all parameters/buffers whose name and shape match between
+    source and target. Layers with different shapes (e.g. the input Linear
+    layer when feature counts differ between datasets) are left with their
+    random initialization.
+
+    :param model: target model to load weights into
+    :param source_state_dict: state dict from the source (pre-trained) model
+    """
+    target_sd = model.state_dict()
+    loaded, skipped = [], []
+    for key, source_param in source_state_dict.items():
+        if key not in target_sd:
+            skipped.append((key, "not in target"))
+            continue
+        if source_param.shape != target_sd[key].shape:
+            skipped.append((key, f"shape mismatch: source {source_param.shape} vs target {target_sd[key].shape}"))
+            continue
+        target_sd[key] = source_param
+        loaded.append(key)
+    model.load_state_dict(target_sd)
+    print(f"  Transfer: loaded {len(loaded)} params, skipped {len(skipped)}")
+    for key, reason in skipped:
+        print(f"    Skipped '{key}': {reason}")
+
+
+def _wrap_with_transfer(model_constructor, pretrained_path: str):
+    """Wrap a model constructor to apply transfer learning from pretrained weights.
+
+    :param model_constructor: callable that creates a model instance
+    :param pretrained_path: path to .pt file with pretrained state_dict
+    :returns: new callable that creates model and loads compatible weights
+    """
+    def wrapped():
+        model = model_constructor()
+        source_sd = torch.load(pretrained_path, map_location="cpu", weights_only=True)
+        load_compatible_state_dict(model, source_sd)
+        return model
+    return wrapped
 
 
 class GDEOptimizer:
@@ -66,12 +113,13 @@ class GDEOptimizer:
                 )
         else:
             raise ValueError(
-                f"Only {' and '.join(SUPORTED_AFs)} are supported for now."
+                f"Only {' and '.join(SUPPORTED_AFs)} are supported for now."
             )
 
         self.output_dir = output_dir
 
         self.config = default_config | config
+        dataset = self.config.get("dataset", "gas")
 
         self.maximize = maximize
 
@@ -92,18 +140,33 @@ class GDEOptimizer:
                 "Catalyst mass loading",
             ]
         else:
-            # If input_labels are provided, use them
             self.input_labels = input_labels
 
         if output_labels is None:
             self.output_labels = ["FE (Eth)", "FE (CO)"]
         else:
-            # If output_labels are provided, use them
             self.output_labels = output_labels
 
         # Stats for normalization of feature columns (set in get_predictor when normalize=True)
         self._means = None  # torch.Tensor of shape (d,)
         self._stds = None  # torch.Tensor of shape (d,)
+
+        self._pretrained_weights = self.config.get("pretrained_weights")
+        if self._pretrained_weights is not None:
+            from pathlib import Path as _Path
+            pw = _Path(self._pretrained_weights)
+            if pw.is_dir():
+                model_tag = {"GP": "GP", "Ph": "Ph", "MLP": "MLP", "GP+Ph": "GP+Ph"}.get(model_name, model_name)
+                candidate = pw / f"{model_tag}_weights.pt"
+                if candidate.exists():
+                    self._pretrained_weights = str(candidate)
+                    print(f"  Using pretrained weights: {candidate}")
+                else:
+                    print(f"  No pretrained weights found at {candidate}, training from scratch")
+                    self._pretrained_weights = None
+            elif not pw.exists():
+                print(f"  Pretrained weights path {pw} does not exist, training from scratch")
+                self._pretrained_weights = None
 
     def _get_data_tensors(
         self, data: Optional[pd.DataFrame] = None, update_stats: bool = False
@@ -183,6 +246,19 @@ class GDEOptimizer:
         """
         raise NotImplementedError
 
+    def save_weights(self, path: str) -> None:
+        """
+        Save the current model weights (from the last trained predictor) to disk.
+
+        :param path: file path to save weights (e.g. 'pretrained/Ph_weights.pt')
+        """
+        if not hasattr(self, '_last_trained_model') or self._last_trained_model is None:
+            raise RuntimeError("No trained model available. Run get_predictor() first.")
+        from pathlib import Path
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        torch.save(self._last_trained_model.state_dict(), path)
+        print(f"Saved weights to {path}")
+
     def update_data(self, new_data: pd.DataFrame | pd.Series) -> None:
         """
         Add new experimental data to the dataset (and sort by 'triplet' for now).
@@ -206,9 +282,20 @@ class GDEOptimizer:
         """
         X, y = self._get_data_tensors(update_stats=True)
 
-        # Direct access to precomputed stats for PhModel
-        mu = float(self._means["Zero_eps_thickness"])
-        sigma = float(self._stds["Zero_eps_thickness"])
+        mu = None
+        sigma = None
+        zlt_index = None
+        system_phase = self.config.get("system_phase") or ("liquid" if self.config.get("dataset") == "bicarb" else "gas")
+        if self.model in (PhModel, MultitaskGPhysModel):
+            if "Zero_eps_thickness" not in self._means.index:
+                raise ValueError(
+                    "Zero_eps_thickness must be present in input_labels for PhModel-based models."
+                )
+            mu = float(self._means["Zero_eps_thickness"])
+            sigma = float(self._stds["Zero_eps_thickness"])
+            zlt_index = self.input_labels.index("Zero_eps_thickness")
+
+        self._last_trained_model = None
 
         # Special handling for GP and GP+Ph models: these use gpytorch training functions
         # (they are not compatible with the ensemble training pipeline used for MLP/Ph).
@@ -232,7 +319,13 @@ class GDEOptimizer:
                 zlt_sigma=sigma,
                 current_target=233,
                 config=self.config,
+                n_inputs=len(self.input_labels),
+                zlt_index=zlt_index,
+                system_phase=system_phase,
             )
+
+            if self._pretrained_weights is not None:
+                ph_model_constructor = _wrap_with_transfer(ph_model_constructor, self._pretrained_weights)
 
             # Train GP+Ph and return BoTorch-compatible model
             stats, _, model, likelihood = train_GP_Ph_model(
@@ -255,6 +348,9 @@ class GDEOptimizer:
                     current_target=233,
                     config=self.config,
                     dropout=0.0,
+                    n_inputs=len(self.input_labels),
+                    zlt_index=zlt_index,
+                    system_phase=system_phase,
                 )
 
             elif self.model == MLPModel:
@@ -265,6 +361,9 @@ class GDEOptimizer:
                     n_inputs=n_in,
                     n_outputs=n_out,
                 )
+
+            if self._pretrained_weights is not None:
+                model_factory = _wrap_with_transfer(model_factory, self._pretrained_weights)
 
             stats, model = train_model_ens(
                 X,
@@ -280,14 +379,14 @@ class GDEOptimizer:
 
     def _get_acquisition_function(
         self, predictor: torch.nn.Module
-    ) -> ExpectedImprovement | LogExpectedImprovement:
+    ) -> ExpectedImprovement | LogExpectedImprovement | ProbabilityOfImprovement:
         """
         Get the acquisition function based on the specified acquisition type.
 
         :param predictor: trained model for predictions
-        :returns: BoTorch acquisition function (EI or logEI)
+        :returns: BoTorch acquisition function (EI, logEI, or PI)
 
-        Note: The acquisition function is in normalized space if normalizatipon is enabled, so the expected imporovment is not the actual value for example. Also normalizing here just for consistency because y is not actually normalized.
+        Note: The acquisition function is in normalized space if normalization is enabled, so the expected improvement is not the actual value for example. Also normalizing here just for consistency because y is not actually normalized.
         """
 
         _, y = self._get_data_tensors()
@@ -317,8 +416,20 @@ class GDEOptimizer:
                 best_f=best_f,
                 maximize=self.maximize,
             )
-        else:
-            raise ValueError("Unsupported acquisition function.")
+        if self.aquisition == "PI":
+            return ProbabilityOfImprovement(
+                predictor,
+                best_f=best_f,
+                maximize=self.maximize,
+            )
+        if self.aquisition == "UCB":
+            beta = self.config.get("UCB_beta", 1.0)
+            return UpperConfidenceBound(
+                predictor,
+                beta=beta,
+                maximize=self.maximize,
+            )
+        raise ValueError(f"Unsupported acquisition function: {self.aquisition}")
 
     def step(
         self, new_data: pd.DataFrame, bounds: Optional[torch.Tensor] = None
@@ -541,7 +652,6 @@ class GDEOptimizer:
             metrics["nll"] = np.nan
 
         if "loss" in stats.columns:
-            # Get last non-NaN loss (often MSE/MAE proxy)
             loss_vals = stats["loss"].dropna()
             if len(loss_vals) > 0:
                 metrics["loss"] = float(loss_vals.iloc[-1])

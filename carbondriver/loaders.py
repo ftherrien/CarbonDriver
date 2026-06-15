@@ -66,7 +66,7 @@ def load_gas_data(file: Optional[Path] = None) -> pd.DataFrame:
     df["FE (CO)"] = df["FE (CO)"] / 100
     df["FE (Eth)"] = df["FE (Eth)"] / 100
 
-    dens_avg = (1 - df["AgCu Ratio"]) *  Cu_DENSITY + df["AgCu Ratio"] * Ag_DENSITY
+    dens_avg = (1 - df["AgCu Ratio"]) * Cu_DENSITY + df["AgCu Ratio"] * Ag_DENSITY
     mass = df["Catalyst mass loading"] * 1e-6  # kg
     area = 1.85**2  # cm^2
     A = area * 1e-4  # m^2
@@ -89,6 +89,7 @@ def load_bicarb_data(filepath: Optional[Path] = None) -> pd.DataFrame:
     df = pd.read_excel(filepath, header=1, index_col=0).iloc[3:,:]
 
     df = separate_repeats(df)
+    df = df.apply(pd.to_numeric, errors='coerce')
 
     df = df.drop(columns=[df.columns[0], "Voltage"])
 

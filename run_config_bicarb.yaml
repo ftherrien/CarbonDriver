@@ -1,11 +1,16 @@
 run_name: bicarb_test_results
 dataset: bicarb
-num_runs: 1
-models: ["MLP", "GP"]
+num_runs: 2
+models: ["GP+Ph", "Ph", "GP", "MLP"]
+# system_phase: gas  # Uncomment to use gas-phase physics with bicarb (liquid) data
+                     # Default: liquid (auto-selected when dataset=bicarb)
+                     # Options: gas (cross-phase test), liquid (standard), or comment out for auto
 property_name: 'FE_CO'
+acquisition: EI
 EI_reference: "max"
 num_iter: 101
 normalize_inputs: True
 normalize_outputs: False
 torch_seed: 0
 use_existing_results: False
+# pretrained_weights: auto  # Uncomment for gas→bicarb transfer learning
