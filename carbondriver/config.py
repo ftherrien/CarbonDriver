@@ -11,4 +11,6 @@ default_config = {
     "property_name": "FE (Eth)",
     "data_file": None,
     "acquisition": "EI",
+    "extra_sink": False,
+    "constant_J_in": False,
 }

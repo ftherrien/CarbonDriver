@@ -81,6 +81,8 @@ class PhModel(torch.nn.Module):
             electrode_reaction_potentials=gde_multi.electrode_reaction_potentials,
             chemical_reaction_rates=gde_multi.chemical_reaction_rates,
             system_phase=system_phase,
+            extra_sink = config.get("extra_sink", None) if config else None,
+            constant_J_in = config.get("constant_J_in", None) if config else None,
         )
         self.softmax = torch.nn.Softmax(dim=1)
         # zero-eps thickness normalization stats
