@@ -13,4 +13,6 @@ default_config = {
     "acquisition": "EI",
     "extra_sink": False,
     "constant_J_in": False,
+    "current_density": None,
+    "zero_eps_thickness": None,
 }

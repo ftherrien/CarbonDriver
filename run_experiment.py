@@ -229,7 +229,7 @@ if __name__ == '__main__':
     if dataset == "bicarb":
         df = load_bicarb_data(filepath=data_file)
     elif dataset == "gas":
-        df = load_gas_data(file=data_file)
+        df, config["current_density"] = load_gas_data(file=data_file)
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
     
