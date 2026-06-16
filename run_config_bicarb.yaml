@@ -1,12 +1,14 @@
-run_name: ../ada_narval/CO2-catalysis/bicarb_tests
+run_name: bicarb_tests
 dataset: bicarb
 num_runs: 2
-models: ["Ph", "GP+Ph", "MLP", "GP"]
-system_phase: gas
+models: ["Ph"]
+system_phase: liquid
 property_name: 'FE_CO'
 EI_reference: "max"
 num_iter: 101
 normalize_inputs: True
 normalize_outputs: False
 torch_seed: 0
-use_existing_results: True
+use_existing_results: False
+extra_sink: False,
+constant_J_in: False,

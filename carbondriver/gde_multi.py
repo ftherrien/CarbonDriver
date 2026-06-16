@@ -138,6 +138,8 @@ class System(torch.nn.Module):
         co2_equilibrium: Optional[Dict[str, float]] = None,
         method: Literal["DIC", "CO2 eql"] = "CO2 eql",
         system_phase: Literal["gas", "liquid"] = "gas",
+        extra_sink: bool = False,
+        constant_J_in: bool = False,
     ):
         super().__init__()
         self.T = T
@@ -150,6 +152,8 @@ class System(torch.nn.Module):
         self.c_k = c_k
         self.dic = dic
         self.system_phase = system_phase
+        self.extra_sink = extra_sink
+        self.constant_J_in = constant_J_in
         if self.system_phase == "liquid":
             self.method = "DIC"
         else:
@@ -655,18 +659,21 @@ class System(torch.nn.Module):
             # LIQUID / BPM BRANCH  (neutral bicarbonate electrolyzer)
             # Neumann BC at x=0: CO2 is generated in-situ at the BPM/catalyst
             #   interface by protons crossing the membrane and acidifying
-            #   carbonate species. The supply flux J_in is therefore set by the
-            #   TOTAL ionic current (galvanostatic i_target), not the HER rate.
+            #   carbonate species.
             # Robin BC at x=L: mass transfer to bulk via K_L_CO2.
             # Exact effectiveness factor eta_c = c_avg / c(L) from cosh/sinh.
             #
             # Steady-state CO2 mass balance over the catalyst layer:
-            #   J_in = k0*L*c03            (consumed by CO2RR -> CO/C2H4)
-            #        + kMT*c03/eta_c       (lost to bulk by convective transfer)
-            #        + k1f*c12*eps*L*c03   (homogeneous sink: CO2 + OH- buffering)
-            # => c03 = J_in / (k0*L + kMT/eta_c + k1f*c12*eps*L).
-            # All three sinks are positive, so the denominator is never negative
-            # (unlike the old acidic formulation that subtracted a feedback term).
+            #   J_consumed = k0*L*c03            (consumed by CO2RR -> CO/C2H4)
+            #              + kMT*c03/eta_c       (lost to bulk by convective transfer)
+            #              (+ k1f*c12*eps*L*c03)   (homogeneous sink: CO2 + OH- buffering)
+            #   J_in = t_CO2 * current_density * 10 / F  (generated at BPM interface, proportional to current)
+            #
+            #   J_in = J_consumed
+            #
+            #   Two options:
+            #   1. current_density = L * F / 10 * ( c03 * k0_electron + r_H2 )
+            #   2. current_density = i_target_b
             #
             # c03 and c12 (OH-) are coupled. We resolve it with a single Picard
             # iteration ("two-step solve"): first c03 ignoring the parasitic sink,
@@ -697,46 +704,42 @@ class System(torch.nn.Module):
                 / (Sh * (1 + e2m) + M_val * (1 - e2m))
             )
 
-            # CO2 generation flux from total ionic current (not HER):
-            # J_in = t_CO2 * i_target * 10 / F  [mol/m^2/s]
-            # i_target is in mA/cm^2; *10 converts to A/m^2, then /F for mol/m^2/s
             k0_electron = 2 * k0_CO + 6 * k0_C2H4
             if i_target is None:
-                # The liquid/BPM branch has no voltage-derived CO2 supply: J_in is
-                # the externally imposed galvanostatic current. solve_current always
-                # passes i_target, so reaching here means solve() was called directly
-                # without it. Fail loudly rather than fabricate a flux.
-                raise ValueError(
-                    "liquid branch requires i_target (galvanostatic total current); "
-                    "call solve_current or pass i_target explicitly to solve()."
-                )
-            i_target_b = i_target.view(-1, 1).expand(-1, phi_ext.shape[1])
-            J_in = t_CO2 * i_target_b * 10.0 / F
+                numerator = t_CO2 * L * r_H2
+                denom_0 = (k0 - t_CO2 * k0_electron) * L + co2_transfer_coeff / eta_c 
+
+            else:
+                i_target_b = i_target.view(-1, 1).expand(-1, phi_ext.shape[1])
+                numerator = t_CO2 * i_target_b * 10.0 / F
+                denom_0 = k0 * L + co2_transfer_coeff / eta_c
 
             # Two-step parasitic-aware solve for c03
             # Step 1: first-pass estimate without parasitic reaction
-            denom_0 = k0 * L + co2_transfer_coeff / eta_c
-            c03_0 = J_in / torch.clamp(denom_0, min=1e-20)
+            c03_0 = numerator / torch.clamp(denom_0, min=1e-20)
             c03_0 = torch.clamp(c03_0, min=0.0, max=1e4)
 
-            # Step 2: compute OH- with first-pass c03
-            r_OH_gen = r_H2 + k0_electron * c03_0
-            c12 = OH_neg + (
-                self.flow_channel_characteristics["K_L_OH"] * OH_neg
-                + L * r_OH_gen
-            ) / (
-                self.flow_channel_characteristics["K_L_OH"]
-                + 2 * self.chemical_reaction_rates["k1f"] * L * eps * c03_0
-            )
-
-            # Step 3: compute parasitic rate coefficient and re-solve c03
-            parasitic_rate_coeff = (
-                self.chemical_reaction_rates["k1f"] * c12 * eps * L
-            )
-            denom_1 = k0 * L + co2_transfer_coeff / eta_c + parasitic_rate_coeff
-            c03 = J_in / torch.clamp(denom_1, min=1e-20)
-            c03 = torch.clamp(c03, min=0.0, max=1e4)
-
+            if self.extra_sink:
+                # Step 2: compute OH- with first-pass c03
+                r_OH_gen = r_H2 + k0_electron * c03_0
+                c12 = OH_neg + (
+                    self.flow_channel_characteristics["K_L_OH"] * OH_neg
+                    + L * r_OH_gen
+                ) / (
+                    self.flow_channel_characteristics["K_L_OH"]
+                    + 2 * self.chemical_reaction_rates["k1f"] * L * eps * c03_0
+                )
+                
+                # Step 3: compute parasitic rate coefficient and re-solve c03
+                parasitic_rate_coeff = (
+                    self.chemical_reaction_rates["k1f"] * c12 * eps * L
+                )
+                denom_1 = denom_0 + parasitic_rate_coeff
+                c03 = numerator / torch.clamp(denom_1, min=1e-20)
+                c03 = torch.clamp(c03, min=0.0, max=1e4)
+            else:
+                c03 = c03_0
+                
             # Step 4: recompute OH- with corrected c03 for consistency
             r_OH_gen = r_H2 + k0_electron * c03
             c12 = OH_neg + (
@@ -794,6 +797,7 @@ class System(torch.nn.Module):
         electrode = L * k0 * c03
 
         if self.system_phase == "liquid":
+            J_in = t_CO2 * current_density * 10 / F
             co2_utilization = torch.where(
                 J_in > 1e-20,
                 torch.clamp(electrode / J_in, min=0.0, max=1.0),
@@ -844,7 +848,7 @@ class System(torch.nn.Module):
             1, -1
         )  # monotonically decreasing
         solution = self.solve(
-            phi, eps, r, L, thetas, gdl_mass_transfer_coeff, i_target=i_target
+            phi, eps, r, L, thetas, gdl_mass_transfer_coeff, i_target=(i_target if self.constant_J_in else None)
         )  # monotonically increasing
 
         I = solution["current_density"].detach()
