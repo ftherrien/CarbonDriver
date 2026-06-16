@@ -11,13 +11,15 @@ class PhModel(torch.nn.Module):
     """
     Model for predicting the Faradaic efficiency of CO and C2H4 on a catalyst.
 
-    The model is a neural network that takes in the following inputs:
-    - AgCu Ratio
-    - Nafion volume (ul)
-    - Sustain volume (ul)
-    - Zero_eps_thickness
-    - Catalyst mass loading
+    The model is a neural network that takes in n_inputs including 2
+    mandatory unnormalized features:
+       1. zlt at x[..., -2], thinkness of perfectly compact catalyst
+       2. current_target at x[..., -1], the current density
 
+    Note: To use zlt and current as part of input features for the NN, they
+    should be repeated twice, once at their mandatory position and once at
+    any position among the first n_inputs-2 features (normalized or not).
+    
     The model outputs the Faradaic efficiency of CO and C2H4.
 
     Values of particle radius r and porosity ε are in
@@ -26,34 +28,24 @@ class PhModel(torch.nn.Module):
 
     def __init__(
         self,
-        zlt_mu: float,
-        zlt_sigma: float,
-        current_target: float = 200,
         dropout: float = 0.1,
         ldim: int = 64,
         n_inputs: int = 5,
-        zlt_index: int = 3,
         config: Optional[Dict[str, Any]] = None,
         system_phase: Literal["gas", "liquid"] = "gas",
     ) -> None:
         """
-        :param zlt_mu: mean of Zero_eps_thickness for normalization
-        :param zlt_sigma: std of Zero_eps_thickness for normalization
-        :param current_target: target current density for electrode simulation
         :param dropout: dropout probability
         :param ldim: hidden layer dimension
-        :param n_inputs: number of input features
-        :param zlt_index: index of Zero_eps_thickness in the input vector
+        :param n_inputs: number of input features (including mandatory features)
         :param config: configuration dict with 'normalize_inputs' flag
         :param system_phase: phase of the electrochemical system ('gas' or 'liquid')
         """
         super().__init__()
         if n_inputs < 1:
             raise ValueError("n_inputs must be >= 1")
-        if zlt_index < 0 or zlt_index >= n_inputs:
-            raise ValueError("zlt_index must be within [0, n_inputs)")
         self.net = torch.nn.Sequential(
-            torch.nn.Linear(n_inputs, ldim),
+            torch.nn.Linear(n_inputs-2, ldim),
             torch.nn.ReLU(),
             torch.nn.Dropout(dropout),
             torch.nn.Linear(ldim, ldim),
@@ -81,16 +73,12 @@ class PhModel(torch.nn.Module):
             electrode_reaction_potentials=gde_multi.electrode_reaction_potentials,
             chemical_reaction_rates=gde_multi.chemical_reaction_rates,
             system_phase=system_phase,
-            extra_sink = config.get("extra_sink", None) if config else None,
-            constant_J_in = config.get("constant_J_in", None) if config else None,
+            extra_sink=config.get("extra_sink", None) if config else None,
+            constant_J_in=config.get("constant_J_in", None) if config else None,
         )
         self.softmax = torch.nn.Softmax(dim=1)
         # zero-eps thickness normalization stats
-        self.zlt_mu = float(zlt_mu)
-        self.zlt_sigma = float(zlt_sigma)
         self.n_inputs = int(n_inputs)
-        self.zlt_index = int(zlt_index)
-        self.current_target = current_target
         # configuration (normalization status is read from here only)
         self.config = config or {"normalize_inputs": False}
         # persistent forward counter to track how many times forward() was called
@@ -110,17 +98,16 @@ class PhModel(torch.nn.Module):
         # increment and print persistent forward counter
         self._forward_counter += 1
         # columns of x: AgCu Ratio, Naf vol (ul), Sust vol (ul), Zero_eps_thickness, Catalyst mass loading
-        latents = self.net(x)
+        latents = self.net(x[...,:-2])
         r = 40e-9 * torch.exp(latents[..., [0]])
         eps = torch.sigmoid(latents[..., [1]])
 
-        # If inputs are normalized, denormalize Zero_eps_thickness (feature index 3)
-        if bool(self.config.get("normalize_inputs", False)):
-            zlt = (x[..., self.zlt_index] * self.zlt_sigma + self.zlt_mu).view(-1, 1)
-        else:
-            zlt = x[..., self.zlt_index].view(-1, 1)
+        zlt = x[..., -2:-1]
+        i_target = x[..., -1:]
+        
         # Prevent division by zero in L calculation
         L = zlt / (1 - eps)
+        
         K_dl_factor = torch.exp(latents[..., [2]])
         thetas = self.softmax(2 * latents[..., 3:])
         # CO activation must not be zero
@@ -134,7 +121,7 @@ class PhModel(torch.nn.Module):
             / r
         )
         solution = self.ph_model.solve_current(
-            i_target=self.current_target,
+            i_target=i_target,
             eps=eps,
             r=r,
             L=L,
@@ -288,10 +275,7 @@ class MyMean(gpytorch.means.Mean):
             print(
                 "No model provided, using default PhModel with placeholder parameters."
             )
-            self.model = PhModel(
-                zlt_mu_stds=(means["Zero_eps_thickness"], stds["Zero_eps_thickness"]),
-                current_target=233,
-            )
+            self.model = PhModel()
 
         if freeze_model:
 

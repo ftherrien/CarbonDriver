@@ -90,7 +90,7 @@ class GDEOptimizer:
                 "AgCu Ratio",
                 "Naf vol (ul)",
                 "Sust vol (ul)",
-                "Zero_eps_thickness",
+                "zero_eps_thickness",
                 "Catalyst mass loading",
             ]
         else:
@@ -115,7 +115,7 @@ class GDEOptimizer:
         :param update_stats: whether to recompute normalization statistics
         :returns: tuple of (X, y) tensors
         """
-
+        
         if data is None:
             data = self.df
 
@@ -157,6 +157,23 @@ class GDEOptimizer:
 
         X = torch.tensor(X.values, dtype=torch.float32)
         y = torch.tensor(y.values, dtype=torch.float32)
+            
+        if self.model in (PhModel, MultitaskGPhysModel):
+            if self.config.get("zero_eps_thickness", None) is not None:
+                zlt = torch.ones(len(data), dtype=torch.float32) * self.config["zero_eps_thickness"]
+            elif "zero_eps_thickness" in data.columns:
+                zlt = torch.tensor(data.loc[:, "zero_eps_thickness"].values, dtype=torch.float32)
+            else:
+                raise ValueError("zero_eps_thickness must be provided either in the data or in the config for PhModel-based models.")
+
+            if self.config.get("current_density", None) is not None:
+                current = torch.ones(len(data), dtype=torch.float32) * self.config["current_density"]
+            elif "current_density" in data.columns:
+                current = torch.tensor(data.loc[:, "current_density"].values, dtype=torch.float32)
+            else:
+                raise ValueError("current_density must be provided either in the data or in the config for PhModel-based models.")
+
+            X = torch.cat([X, zlt.unsqueeze(1), current.unsqueeze(1)], dim=1)
 
         return X, y
 
@@ -208,16 +225,7 @@ class GDEOptimizer:
 
         mu = None
         sigma = None
-        zlt_index = None
         system_phase = self.config.get("system_phase") or ("liquid" if self.config.get("dataset") == "bicarb" else "gas")
-        if self.model in (PhModel, MultitaskGPhysModel):
-            if "Zero_eps_thickness" not in self._means.index:
-                raise ValueError(
-                    "Zero_eps_thickness must be present in input_labels for PhModel-based models."
-                )
-            mu = float(self._means["Zero_eps_thickness"])
-            sigma = float(self._stds["Zero_eps_thickness"])
-            zlt_index = self.input_labels.index("Zero_eps_thickness")
 
         # Special handling for GP and GP+Ph models: these use gpytorch training functions
         # (they are not compatible with the ensemble training pipeline used for MLP/Ph).
@@ -237,12 +245,8 @@ class GDEOptimizer:
             # GP+Physics: Ph model constructor must be provided to the GP+Ph trainer.
 
             ph_model_constructor = lambda: PhModel(
-                zlt_mu=mu,
-                zlt_sigma=sigma,
-                current_target=233,
                 config=self.config,
-                n_inputs=len(self.input_labels),
-                zlt_index=zlt_index,
+                n_inputs=len(self.input_labels)+2,
                 system_phase=system_phase,
             )
 
@@ -262,13 +266,9 @@ class GDEOptimizer:
             if self.model == PhModel:
 
                 model_factory = lambda: PhModel(
-                    zlt_mu=mu,
-                    zlt_sigma=sigma,
-                    current_target=233,
                     config=self.config,
                     dropout=0.0,
-                    n_inputs=len(self.input_labels),
-                    zlt_index=zlt_index,
+                    n_inputs=len(self.input_labels)+2,
                     system_phase=system_phase,
                 )
 

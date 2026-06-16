@@ -46,11 +46,17 @@ def load_gas_data(file: Optional[Path] = None) -> pd.DataFrame:
     """Load experimental data from Excel and compute electrode thickness.
 
     :param file: path to Excel file (default: ./Characterization_data.xlsx)
-    :returns: DataFrame with features and experimental Faradaic efficiencies
+    :returns:
+        DataFrame with features and experimental Faradaic efficiencies
+        current_density
     """
     if file is None:
         file = Path("./Characterization_data.xlsx")
     df = pd.read_excel(file, skiprows=[1], index_col=0)
+
+    current = df["Current (A)"].unique()
+    assert len(current) == 1
+    
     df = df[
         [
             "AgCu Ratio",
@@ -71,12 +77,14 @@ def load_gas_data(file: Optional[Path] = None) -> pd.DataFrame:
     area = 1.85**2  # cm^2
     A = area * 1e-4  # m^2
     thickness = (mass / dens_avg) / A  # m
-    df.insert(3, column="Zero_eps_thickness", value=thickness)
+    df.insert(3, column="zero_eps_thickness", value=thickness)
 
     # reshuffle triplets
     df["triplet"] = np.arange(len(df)) // 3
- 
-    return df.astype(float)
+
+    current_density = current[0] * 1e3 / area  # mA/cm^2
+    
+    return df.astype(float), current_density
 
 def load_bicarb_data(filepath: Optional[Path] = None) -> pd.DataFrame:
     """
@@ -100,7 +108,8 @@ def load_bicarb_data(filepath: Optional[Path] = None) -> pd.DataFrame:
     area = 1.85**2  # cm^2
     A = area * 1e-4  # m^2
     thickness = (mass / Ag_DENSITY) / A  # m
-    df.insert(1, column="Zero_eps_thickness", value=thickness)
+    df.insert(1, column="zero_eps_thickness", value=thickness)
+    df.rename(columns={"Current density": "current_density"}, inplace=True)
 
     return df.astype(float)
     
