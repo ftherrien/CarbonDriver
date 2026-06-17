@@ -44,6 +44,17 @@ class PhModel(torch.nn.Module):
         super().__init__()
         if n_inputs < 1:
             raise ValueError("n_inputs must be >= 1")
+
+        if system_phase == "gas":
+            self.t_CO2_fixed = 0
+            n_latents = 6
+        elif config is not None and config.get("t_CO2", None) is not None:
+            self.t_CO2_fixed = float(config["t_CO2"])
+            n_latents = 6
+        else:
+            self.t_CO2_fixed = None
+            n_latents = 7
+
         self.net = torch.nn.Sequential(
             torch.nn.Linear(n_inputs-2, ldim),
             torch.nn.ReLU(),
@@ -54,7 +65,7 @@ class PhModel(torch.nn.Module):
             torch.nn.Linear(ldim, ldim),
             torch.nn.ReLU(),
             torch.nn.Dropout(dropout),
-            torch.nn.Linear(ldim, 6),
+            torch.nn.Linear(ldim, n_latents),
         )
 
         erc = gde_multi.electrode_reaction_kinetics | {}
@@ -77,11 +88,8 @@ class PhModel(torch.nn.Module):
             constant_J_in=config.get("constant_J_in", None) if config else None,
         )
         self.softmax = torch.nn.Softmax(dim=1)
-        # zero-eps thickness normalization stats
         self.n_inputs = int(n_inputs)
-        # configuration (normalization status is read from here only)
         self.config = config or {"normalize_inputs": False}
-        # persistent forward counter to track how many times forward() was called
         self._forward_counter = 0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -109,12 +117,18 @@ class PhModel(torch.nn.Module):
         L = zlt / (1 - eps)
         
         K_dl_factor = torch.exp(latents[..., [2]])
-        thetas = self.softmax(2 * latents[..., 3:])
+        thetas = self.softmax(2 * latents[..., 3:6])
         # CO activation must not be zero
         theta0 = thetas[..., [0]]
         theta1 = thetas[..., [1]]
         theta2 = thetas[..., [2]]
         thetas = {"CO": theta0, "C2H4": theta1, "H2b": theta2}
+
+        if self.t_CO2_fixed is not None:
+            t_CO2 = self.t_CO2_fixed
+        else:
+            t_CO2 = torch.sigmoid(latents[..., [6]])
+
         gdl_mass_transfer_coefficient = (
             K_dl_factor
             * self.ph_model.bruggeman(gde_multi.diffusion_coefficients["CO2"], eps)
@@ -129,6 +143,7 @@ class PhModel(torch.nn.Module):
             gdl_mass_transfer_coeff=gdl_mass_transfer_coefficient,
             grid_size=1000,
             voltage_bounds=(-1.25, 0),
+            t_CO2=t_CO2,
         )
 
         if self.config.get("dataset") == "bicarb":

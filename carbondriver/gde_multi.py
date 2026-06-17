@@ -404,7 +404,8 @@ class System(torch.nn.Module):
         thetas: Dict[str, torch.Tensor],
         gdl_mass_transfer_coeff: torch.Tensor,
         i_target: Optional[torch.Tensor] = None,
-    ):
+        t_CO2: float = 0.84,
+    ):  
         A = self.volumetric_surface_area(eps, r)
         F = self.F
         R = self.R
@@ -689,7 +690,6 @@ class System(torch.nn.Module):
             # true faradaic component (~0.28) plus a ~5 sccm current-independent
             # CO2 crossover baseline, and is insensitive to small changes (FE_CO
             # varies <1% over t in [0.60, 1.00] at this operating point).
-            t_CO2 = 0.84
             co2_transfer_coeff = self.flow_channel_characteristics["K_L_CO2"]
 
             M_val = torch.clamp(M(k0), min=1e-6)
@@ -840,6 +840,7 @@ class System(torch.nn.Module):
         voltage_bounds: Tuple = (-2, 0),
         return_init_residual: bool = False,
         grid_size: int = 500,
+        t_CO2: float = 0.84,
     ):
         if not isinstance(i_target, torch.Tensor):
             i_target = torch.ones_like(eps) * i_target
@@ -848,7 +849,7 @@ class System(torch.nn.Module):
             1, -1
         )  # monotonically decreasing
         solution = self.solve(
-            phi, eps, r, L, thetas, gdl_mass_transfer_coeff, i_target=(i_target if self.constant_J_in else None)
+            phi, eps, r, L, thetas, gdl_mass_transfer_coeff, i_target=(i_target if self.constant_J_in else None), t_CO2=t_CO2
         )  # monotonically increasing
 
         I = solution["current_density"].detach()

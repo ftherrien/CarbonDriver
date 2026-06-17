@@ -1,7 +1,7 @@
 run_name: bicarb_tests
 dataset: bicarb
 num_runs: 2
-models: ["Ph"]
+models: ["Ph", "GP+Ph"]
 system_phase: liquid
 property_name: 'FE_CO'
 EI_reference: "max"
@@ -10,5 +10,6 @@ normalize_inputs: True
 normalize_outputs: False
 torch_seed: 0
 use_existing_results: False
-extra_sink: False,
-constant_J_in: False,
+extra_sink: False
+constant_J_in: False
+t_CO2: 0.84
