@@ -9,6 +9,7 @@ import seaborn as sns
 import scipy.optimize as opt
 import torch
 import torch.nn.functional
+import warnings
 
 diffusion_coefficients = MappingProxyType(
     {
@@ -856,10 +857,16 @@ class System(torch.nn.Module):
         I = torch.where(torch.isnan(I) | torch.isinf(I),
                         torch.zeros_like(I), I)
 
-        i_target = i_target.reshape(-1, 1)
-        idx = (
-            torch.searchsorted(I, i_target, side="right") - 1
-        )  # left values. Now interpolate
+        # Normally the solution to this warning would be to explicitely call .contiguous()
+        # but since we are inside vmap, that does not actually make the tensor contiguous
+        # for the C code in searchsorted.
+        # This only takes a bit more time because it creates a copy, but we would do that
+        # anyway by calling .contiguous()
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", 
+                                    message=".*torch.searchsorted.*input value tensor is non-contiguous.*")
+            idx = torch.searchsorted(I.contiguous(), i_target.contiguous(), side="right") - 1
+        # left values. Now interpolate
         idx = torch.clamp(idx, 0, I.shape[1] - 2)
 
         curr_left = I.gather(dim=1, index=idx)
