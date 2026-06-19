@@ -15,8 +15,26 @@ def test_import():
     gde = GDEOptimizer(output_dir="./tmp_test_out")
 
 
-@pytest.mark.parametrize("model_type", ["GP+Ph", "GP", "Ph", "MLP"])
-def test_gde_optimizer_within(model_type):
+# Define test parameters for step_within_data tests
+# Format: (model_type, config_overrides)
+within_test_params = [
+    # Basic tests with default config for all models
+    ("GP+Ph", {}),
+    ("GP", {}),
+    ("Ph", {}),
+    ("MLP", {}),
+    # Additional test for Ph and GP+Ph with liquid phase
+    ("Ph", {"system_phase": "liquid"}),
+    ("GP+Ph", {"system_phase": "liquid"}),
+    # Additional tests for MLP with different acquisition functions
+    ("MLP", {"acquisition": "EI"}),
+    ("MLP", {"acquisition": "logEI"}),
+    ("MLP", {"acquisition": "PI"}),
+    ("MLP", {"acquisition": "UCB"}),
+]
+
+@pytest.mark.parametrize("model_type,config_overrides", within_test_params)
+def test_gde_optimizer_within(model_type, config_overrides):
     from carbondriver import GDEOptimizer
     from carbondriver.loaders import load_gas_data
 
@@ -24,34 +42,67 @@ def test_gde_optimizer_within(model_type):
 
     df, current_density = load_gas_data(data_path)
 
-    gde = GDEOptimizer(model_type, config={"current_density": current_density}, output_dir="./tmp_test_out")
+    # Merge base config with overrides
+    config = {"current_density": current_density, **config_overrides}
+    
+    # Use acquisition if specified in config, otherwise default
+    acquisition = config_overrides.get("acquisition", "EI")
+    
+    gde = GDEOptimizer(model_type, aquisition=acquisition, config=config, output_dir="./tmp_test_out")
 
     df_train = df.iloc[:12]
     df_explore = df.iloc[12:]
 
     ei, next_pick = gde.step_within_data(df_train, df_explore)
 
-    print("First pick:", ei, int(next_pick))
+    print(f"First pick ({model_type}):", ei, int(next_pick))
 
     df_new = df_explore.iloc[int(next_pick)]
     df_explore = df_explore.drop(index=df_new.name)
 
     ei, next_pick = gde.step_within_data(df_new, df_explore)
 
-    print("Second pick", ei, int(next_pick))
+    print(f"Second pick ({model_type}):", ei, int(next_pick))
 
-@pytest.mark.parametrize("model_type", ["MLP", "GP+Ph", "GP", "Ph"])
-def test_gde_optimizer_free(model_type):
+
+# Define test parameters for step (free optimization) tests
+# Format: (model_type, config_overrides)
+free_test_params = [
+    # Basic tests with default config for all models
+    ("MLP", {}),
+    ("GP+Ph", {}),
+    ("GP", {}),
+    ("Ph", {}),
+    # Additional test for Ph and GP+Ph with liquid phase
+    ("Ph", {"system_phase": "liquid"}),
+    ("GP+Ph", {"system_phase": "liquid"}),
+    # Additional tests for MLP with different acquisition functions
+    ("MLP", {"acquisition": "EI"}),
+    ("MLP", {"acquisition": "logEI"}),
+    ("MLP", {"acquisition": "PI"}),
+    ("MLP", {"acquisition": "UCB"}),
+]
+
+@pytest.mark.parametrize("model_type,config_overrides", free_test_params)
+def test_gde_optimizer_free(model_type, config_overrides):
     from carbondriver import GDEOptimizer
     from carbondriver.loaders import load_gas_data
 
     df, current_density = load_gas_data(data_path)
     
-    gde = GDEOptimizer(model_type, config={"current_density": current_density}, output_dir="./tmp_test_out")
+    # Merge base config with overrides
+    config = {"current_density": current_density, **config_overrides}
+    
+    # Use acquisition if specified in config, otherwise default
+    acquisition = config_overrides.get("acquisition", "EI")
 
-    ei, next_pick = gde.step(df.iloc[:12])
+    config["extra_sink"] = True # This stabilizes the liquid model
+    
+    gde = GDEOptimizer(model_type, aquisition=acquisition, config=config, output_dir="./tmp_test_out")
 
-    print(ei, next_pick)
+    ei, next_pick = gde.step(df.iloc[:18])
+
+    print(f"Result ({model_type}):", ei, next_pick)
 
 if __name__ == "__main__":
-        test_gde_optimizer_free("MLP")
+        test_gde_optimizer_free("Ph", {"system_phase": "liquid"})
