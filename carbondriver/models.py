@@ -5,20 +5,23 @@ from carbondriver import gde_multi
 from botorch.models.gpytorch import GPyTorchModel
 from gpytorch.distributions import MultitaskMultivariateNormal
 from botorch.models.ensemble import EnsembleModel
+from pandas import Series
 
+SPECIAL_FEATURES = ["zero_eps_thickness", "current_density"]
 
 class PhModel(torch.nn.Module):
     """
     Model for predicting the Faradaic efficiency of CO and C2H4 on a catalyst.
 
-    The model is a neural network that takes in n_inputs including 2
-    mandatory unnormalized features:
-       1. zlt at x[..., -2], thinkness of perfectly compact catalyst
-       2. current_target at x[..., -1], the current density
+    The model is a neural network that takes in n_inputs
 
-    Note: To use zlt and current as part of input features for the NN, they
-    should be repeated twice, once at their mandatory position and once at
-    any position among the first n_inputs-2 features (normalized or not).
+    There are two mandatory features:
+       1. zlt, thinkness of perfectly compact catalyst
+       2. current_target, the current density
+
+    These features may be included as part of the n_inputs in which case they will be
+    denormalized. They can also be provided as fixed values. If a fixed value is provided
+    and the feature is part of the n_inputs, the fixed value will be used.
     
     The model outputs the Faradaic efficiency of CO and C2H4.
 
@@ -33,13 +36,17 @@ class PhModel(torch.nn.Module):
         n_inputs: int = 5,
         config: Optional[Dict[str, Any]] = None,
         system_phase: Literal["gas", "liquid"] = "gas",
+        means: Series = Series(),
+        stds: Series = Series(),
     ) -> None:
         """
         :param dropout: dropout probability
         :param ldim: hidden layer dimension
-        :param n_inputs: number of input features (including mandatory features)
-        :param config: configuration dict with 'normalize_inputs' flag
+        :param n_inputs: number of input features
+        :param config: configuration dict that can include fixed values for 'zero_eps_thickness', 'current_density', and 't_CO2'
         :param system_phase: phase of the electrochemical system ('gas' or 'liquid')
+        :param means: pandas Series of feature means for denormalization (index should match the order of the input features)
+        :param stds: pandas Series of feature stds for denormalization (index should match the order of the input features)
         """
         super().__init__()
         if n_inputs < 1:
@@ -55,6 +62,20 @@ class PhModel(torch.nn.Module):
             self.t_CO2_fixed = None
             n_latents = 7
 
+        self.means = means
+        self.stds = stds
+
+        self.fixed_value = {}
+        for feature in SPECIAL_FEATURES:
+            if config is not None and config.get(feature, None) is not None:
+                self.fixed_value[feature] = float(config[feature])
+            else:
+                self.fixed_value[feature] = None
+                if feature not in self.means or feature not in self.stds:
+                    raise ValueError(f"Feature {feature} must be provided in means and stds if not fixed in config.")
+                if self.means.index.get_loc(feature) != self.stds.index.get_loc(feature):
+                    raise ValueError(f"Feature {feature} must have the same index in means and stds.")
+            
         self.net = torch.nn.Sequential(
             torch.nn.Linear(n_inputs-2, ldim),
             torch.nn.ReLU(),
@@ -110,8 +131,15 @@ class PhModel(torch.nn.Module):
         r = 40e-9 * torch.exp(latents[..., [0]])
         eps = torch.sigmoid(latents[..., [1]])
 
-        zlt = x[..., -2:-1]
-        i_target = x[..., -1:]
+        if self.fixed_value["zero_eps_thickness"] is not None:
+            zlt = self.fixed_value["zero_eps_thickness"]
+        else:
+            zlt = x[..., self.means.index.get_loc("zero_eps_thickness")].unsqueeze(-1)*self.stds["zero_eps_thickness"] + self.means["zero_eps_thickness"]
+
+        if self.fixed_value["current_density"] is not None:
+            i_target = self.fixed_value["current_density"]
+        else:
+            i_target = x[..., self.means.index.get_loc("current_density")].unsqueeze(-1)*self.stds["current_density"] + self.means["current_density"]
         
         # Prevent division by zero in L calculation
         L = zlt / (1 - eps)

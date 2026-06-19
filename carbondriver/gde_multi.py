@@ -857,6 +857,8 @@ class System(torch.nn.Module):
         I = torch.where(torch.isnan(I) | torch.isinf(I),
                         torch.zeros_like(I), I)
 
+        i_target = i_target.view(-1, 1)
+        
         # Normally the solution to this warning would be to explicitely call .contiguous()
         # but since we are inside vmap, that does not actually make the tensor contiguous
         # for the C code in searchsorted.
@@ -865,7 +867,7 @@ class System(torch.nn.Module):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", 
                                     message=".*torch.searchsorted.*input value tensor is non-contiguous.*")
-            idx = torch.searchsorted(I.contiguous(), i_target.contiguous(), side="right") - 1
+            idx = torch.searchsorted(I, i_target, side="right") - 1
         # left values. Now interpolate
         idx = torch.clamp(idx, 0, I.shape[1] - 2)
 

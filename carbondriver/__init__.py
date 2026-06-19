@@ -102,8 +102,8 @@ class GDEOptimizer:
             self.output_labels = output_labels
 
         # Stats for normalization of feature columns (set in get_predictor when normalize=True)
-        self._means = None  # torch.Tensor of shape (d,)
-        self._stds = None  # torch.Tensor of shape (d,)
+        self._means = pd.Series(0.0, self.input_labels + self.output_labels)
+        self._stds = pd.Series(1.0, self.input_labels + self.output_labels)
 
     def _get_data_tensors(
         self, data: Optional[pd.DataFrame] = None, update_stats: bool = False
@@ -121,59 +121,25 @@ class GDEOptimizer:
 
         df_clean = data.loc[:, self.input_labels + self.output_labels]
 
-        if update_stats or self._means is None or self._stds is None:
-            self._means = df_clean.mean()
-            self._stds = df_clean.std(ddof=0)
+        if update_stats:
+            if self.config["normalize_inputs"]:
+                self._means.loc[self.input_labels] = df_clean.loc[:,self.input_labels].mean()
+                self._stds.loc[self.input_labels] = df_clean.loc[:,self.input_labels].std(ddof=0)
+                
+            if self.config["normalize_outputs"]:
+                self._means.loc[self.output_labels] = df_clean.loc[:,self.output_labels].mean()
+                self._stds.loc[self.output_labels] = df_clean.loc[:,self.output_labels].std(ddof=0)
 
-        if self.config["normalize_inputs"]:
-            if self._stds[self.input_labels].min() < 1e-10:
+            if self._stds.min() < 1e-10:
                 print(
-                    "Note: Input feature standard deviation is < 1e-10, normalizing with 1"
+                    "Note: Some features standard deviation are < 1e-10, normalizing with 1"
                 )
-                self._stds.loc[
-                    self._stds.index.isin(self.input_labels) & (self._stds < 1e-10)
-                ] = 1
+                self._stds.loc[self._stds < 1e-10] = 1
 
-            X = (
-                df_clean.loc[:, self.input_labels] - self._means[self.input_labels]
-            ) / self._stds[self.input_labels]
-        else:
-            X = df_clean.loc[:, self.input_labels]
+        df_clean = (df_clean - self._means) / self._stds
 
-        if self.config["normalize_outputs"]:
-            if self._stds[self.output_labels].min() < 1e-10:
-                print(
-                    "Note: Output feature standard deviation is < 1e-10, normalizing with 1"
-                )
-                self._stds.loc[
-                    self._stds.index.isin(self.output_labels) & (self._stds < 1e-10)
-                ] = 1
-
-            y = (
-                df_clean.loc[:, self.output_labels] - self._means[self.output_labels]
-            ) / self._stds[self.output_labels]
-        else:
-            y = df_clean.loc[:, self.output_labels]
-
-        X = torch.tensor(X.values, dtype=torch.float32)
-        y = torch.tensor(y.values, dtype=torch.float32)
-            
-        if self.model in (PhModel, MultitaskGPhysModel):
-            if self.config.get("zero_eps_thickness", None) is not None:
-                zlt = torch.ones(len(data), dtype=torch.float32) * self.config["zero_eps_thickness"]
-            elif "zero_eps_thickness" in data.columns:
-                zlt = torch.tensor(data.loc[:, "zero_eps_thickness"].values, dtype=torch.float32)
-            else:
-                raise ValueError("zero_eps_thickness must be provided either in the data or in the config for PhModel-based models.")
-
-            if self.config.get("current_density", None) is not None:
-                current = torch.ones(len(data), dtype=torch.float32) * self.config["current_density"]
-            elif "current_density" in data.columns:
-                current = torch.tensor(data.loc[:, "current_density"].values, dtype=torch.float32)
-            else:
-                raise ValueError("current_density must be provided either in the data or in the config for PhModel-based models.")
-
-            X = torch.cat([X, zlt.unsqueeze(1), current.unsqueeze(1)], dim=1)
+        X = torch.tensor(df_clean.loc[:, self.input_labels].values, dtype=torch.float32)
+        y = torch.tensor(df_clean.loc[:, self.output_labels].values, dtype=torch.float32)
 
         return X, y
 
@@ -185,8 +151,8 @@ class GDEOptimizer:
         :returns: tensor of shape (2, d) with min and max bounds for each feature
         """
         if self._bounds is None:
-            bds_max = self.df.loc[:, self.input_labels].values.max(axis=0)
-            bds_min = self.df.loc[:, self.input_labels].values.min(axis=0)
+            bds_max = self.df.loc[:, self.input_labels].max().to_list()
+            bds_min = self.df.loc[:, self.input_labels].min().to_list()
             raw_bounds = torch.tensor([bds_min, bds_max], dtype=torch.float32)
             # Debug: show computed raw bounds
             # print(f"[bounds] raw min: {raw_bounds[0].tolist()} raw max: {raw_bounds[1].tolist()}")
@@ -223,8 +189,6 @@ class GDEOptimizer:
         """
         X, y = self._get_data_tensors(update_stats=True)
 
-        mu = None
-        sigma = None
         system_phase = self.config.get("system_phase") or ("liquid" if self.config.get("dataset") == "bicarb" else "gas")
 
         # Special handling for GP and GP+Ph models: these use gpytorch training functions
@@ -246,8 +210,10 @@ class GDEOptimizer:
 
             ph_model_constructor = lambda: PhModel(
                 config=self.config,
-                n_inputs=len(self.input_labels)+2,
+                n_inputs=len(self.input_labels),
                 system_phase=system_phase,
+                means=self._means,
+                stds=self._stds
             )
 
             # Train GP+Ph and return BoTorch-compatible model
@@ -268,8 +234,10 @@ class GDEOptimizer:
                 model_factory = lambda: PhModel(
                     config=self.config,
                     dropout=0.0,
-                    n_inputs=len(self.input_labels)+2,
+                    n_inputs=len(self.input_labels),
                     system_phase=system_phase,
+                    means=self._means,
+                    stds=self._stds
                 )
 
             elif self.model == MLPModel:
@@ -421,23 +389,15 @@ class GDEOptimizer:
             )
         # print(f"[step] optimizing target column index (target_idx): {target_idx} for quantity '{self.quantity}'")
 
-        if self.config["normalize_inputs"]:
-            means, stds = (
-                self._means[self.input_labels],
-                self._stds[self.input_labels],
-            )  # feature-only stats
+        means, stds = (
+            torch.tensor(self._means[self.input_labels].values), # Will be 0 if not normalized
+            torch.tensor(self._stds[self.input_labels].values), # Will be 1 if not normalized
+        )  # feature-only stats
 
-            bounds_norm = torch.stack(
-                [
-                    (raw_bounds[0] - means.values) / stds.values,
-                    (raw_bounds[1] - means.values) / stds.values,
-                ],
-                dim=0,
-            )
-            # print(f"[step] normalized bounds min: {bounds_norm[0].tolist()} max: {bounds_norm[1].tolist()}")
-            opt_bounds = bounds_norm.float()
-        else:
-            opt_bounds = raw_bounds
+        bounds_norm = (raw_bounds - means) / stds
+        
+        # print(f"[step] normalized bounds min: {bounds_norm[0].tolist()} max: {bounds_norm[1].tolist()}")
+        opt_bounds = bounds_norm.float()
 
         def AF_q(x):
             vals = AF(x)
@@ -465,18 +425,16 @@ class GDEOptimizer:
             raw_samples=30,
             options={},
         )
-
-        if self.config["normalize_inputs"]:
-            # Denormalize the candidate if optimization was done in normalized space
-            x_candidate = next_experiment * stds.values + means.values
-
-        else:
-            x_candidate = next_experiment
+        
+        # Denormalize the candidate, mean=0 and std=1 if not normalized. 
+        x_candidate = next_experiment * stds + means
 
         self.i += 1
 
         # Evaluate AF at the (normalized) next point for returning EI value
-        ei_val = AF_q(next_experiment)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Output shape checks failed!")
+            ei_val = AF_q(next_experiment)
 
         return ei_val, pd.Series(
             x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
@@ -496,9 +454,9 @@ class GDEOptimizer:
         :param return_metrics: whether to return training metrics (nll, loss)
         :returns: (best_ei_value, best_index) or (best_ei_value, best_index, metrics) if return_metrics=True
         """
-
+        
         self.update_data(new_data)
-
+        
         try:
             predictor, stats = self.get_predictor()
         except torch._C._LinAlgError:
@@ -533,7 +491,7 @@ class GDEOptimizer:
         AF = self._get_acquisition_function(predictor)
 
         with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            warnings.filterwarnings("ignore", message="Output shape checks failed!")
             scores = AF(X.unsqueeze(1))
 
         if isinstance(scores, torch.Tensor) and scores.dim() == 1:
