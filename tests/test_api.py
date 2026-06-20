@@ -5,8 +5,8 @@ import pytest
 # Path to this test file
 dir_above = Path(__file__).parent
 
-# Path to paper/Characterization_data.xlsx from repo root
-data_path = dir_above.parent / "paper" / "Characterization_data.xlsx"
+# Path to data/gas.xlsx from repo root
+data_path = dir_above.parent / "data" / "gas.xlsx"
 
 
 def test_import():

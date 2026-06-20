@@ -45,13 +45,13 @@ def load_results_from_folder(
 def load_gas_data(file: Optional[Path] = None) -> pd.DataFrame:
     """Load experimental data from Excel and compute electrode thickness.
 
-    :param file: path to Excel file (default: ./Characterization_data.xlsx)
+    :param file: path to Excel file (default: ./data/gas.xlsx)
     :returns:
         DataFrame with features and experimental Faradaic efficiencies
         current_density
     """
     if file is None:
-        file = Path("./Characterization_data.xlsx")
+        file = Path("./data/gas.xlsx")
     df = pd.read_excel(file, skiprows=[1], index_col=0)
 
     current = df["Current (A)"].unique()
@@ -92,7 +92,7 @@ def load_bicarb_data(filepath: Optional[Path] = None) -> pd.DataFrame:
     """
 
     if filepath is None:
-        filepath = Path("./Bicarb_characterization_data.xlsx")
+        filepath = Path("./data/bicarb.xlsx")
 
     df = pd.read_excel(filepath, header=1, index_col=0).iloc[3:,:]
 

@@ -22,7 +22,7 @@ NTASKS = 8
 MEM = "16GB"
 ACCOUNT = "def-peslherb"
 
-SCRIPT_NAME = "run_experiment.py"
+SCRIPT_NAME = "scripts/run_experiments.py"
 RESULTS_DIR = Path("cluster_results")
 
 EXPERIMENTS = [
