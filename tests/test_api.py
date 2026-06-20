@@ -17,12 +17,13 @@ def test_import():
 
 # Define test parameters for step_within_data tests
 # Format: (model_type, config_overrides)
-within_test_params = [
+test_params = [
     # Basic tests with default config for all models
     ("GP+Ph", {}),
     ("GP", {}),
     ("Ph", {}),
     ("MLP", {}),
+    ("LLM", {}),
     # Additional test for Ph and GP+Ph with liquid phase
     ("Ph", {"system_phase": "liquid"}),
     ("GP+Ph", {"system_phase": "liquid"}),
@@ -33,7 +34,7 @@ within_test_params = [
     ("MLP", {"acquisition": "UCB"}),
 ]
 
-@pytest.mark.parametrize("model_type,config_overrides", within_test_params)
+@pytest.mark.parametrize("model_type,config_overrides", test_params)
 def test_gde_optimizer_within(model_type, config_overrides):
     from carbondriver import GDEOptimizer
     from carbondriver.loaders import load_gas_data
@@ -57,33 +58,14 @@ def test_gde_optimizer_within(model_type, config_overrides):
 
     print(f"First pick ({model_type}):", ei, int(next_pick))
 
-    df_new = df_explore.iloc[int(next_pick)]
+    df_new = df_explore.loc[next_pick]
     df_explore = df_explore.drop(index=df_new.name)
 
     ei, next_pick = gde.step_within_data(df_new, df_explore)
 
     print(f"Second pick ({model_type}):", ei, int(next_pick))
 
-
-# Define test parameters for step (free optimization) tests
-# Format: (model_type, config_overrides)
-free_test_params = [
-    # Basic tests with default config for all models
-    ("MLP", {}),
-    ("GP+Ph", {}),
-    ("GP", {}),
-    ("Ph", {}),
-    # Additional test for Ph and GP+Ph with liquid phase
-    ("Ph", {"system_phase": "liquid"}),
-    ("GP+Ph", {"system_phase": "liquid"}),
-    # Additional tests for MLP with different acquisition functions
-    ("MLP", {"acquisition": "EI"}),
-    ("MLP", {"acquisition": "logEI"}),
-    ("MLP", {"acquisition": "PI"}),
-    ("MLP", {"acquisition": "UCB"}),
-]
-
-@pytest.mark.parametrize("model_type,config_overrides", free_test_params)
+@pytest.mark.parametrize("model_type,config_overrides", test_params)
 def test_gde_optimizer_free(model_type, config_overrides):
     from carbondriver import GDEOptimizer
     from carbondriver.loaders import load_gas_data
