@@ -4,6 +4,7 @@ This runs the test suite multiple times, collecting data at each step.
 """
 
 from pathlib import Path
+import itertools
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -15,6 +16,61 @@ import torch
 import yaml
 import sys
 import argparse
+
+# Keys that are always lists and never create cartesian-product combinations.
+# Also never put 'dataset' or 'data_file' in a list — all combos must share the same data.
+ALWAYS_LIST_KEYS = {'runs', 'input_labels', 'output_labels'}
+
+
+def expand_config(base_config: dict):
+    """Yield one sub-config per combination of list-valued params.
+
+    Every param whose value is a list (except ALWAYS_LIST_KEYS) becomes an
+    axis of the cartesian product.  Each sub-config has scalar values for
+    those params and a run_name suffixed with their values, e.g. "run-GP-EI".
+    """
+    var_keys = [k for k, v in base_config.items()
+                if isinstance(v, list) and k not in ALWAYS_LIST_KEYS]
+    if not var_keys:
+        yield base_config
+        return
+    for combo in itertools.product(*[base_config[k] for k in var_keys]):
+        sub = {**base_config}
+        for k, v in zip(var_keys, combo):
+            sub[k] = v
+        sub["run_name"] = base_config["run_name"] + "/" + "-".join(str(v) for v in combo)
+        yield sub
+
+
+_BLUE_SHADES  = ["royalblue", "navy", "dodgerblue", "steelblue", "cornflowerblue", "mediumblue"]
+_GREEN_SHADES = ["limegreen", "darkgreen", "forestgreen", "mediumseagreen", "olivedrab", "seagreen"]
+_MARKERS      = ["o", "s", "^", "D", "v", "P", "*", "X"]
+
+
+def build_combo_style(combo_configs: list) -> tuple[dict, dict]:
+    """Return (palette, markers) dicts mapping each combo run_name → color/marker.
+
+    MLP/GP → blue shades, Ph/GP+Ph → green shades, baseline → gray.
+    Shades and markers cycle within each family as more combos are added.
+    """
+    palette = {"baseline": "gray"}
+    markers = {"baseline": "o"}
+    bi = gi = 0
+    for c in combo_configs:
+        name  = c["run_name"]
+        model = c["models"]
+        if model in ("MLP", "GP"):
+            palette[name] = _BLUE_SHADES[bi % len(_BLUE_SHADES)]
+            markers[name] = _MARKERS[bi % len(_MARKERS)]
+            bi += 1
+        elif model in ("Ph", "GP+Ph"):
+            palette[name] = _GREEN_SHADES[gi % len(_GREEN_SHADES)]
+            markers[name] = _MARKERS[gi % len(_MARKERS)]
+            gi += 1
+        else:
+            palette[name] = f"C{len(palette)}"
+            markers[name] = _MARKERS[(bi + gi) % len(_MARKERS)]
+    return palette, markers
 
 
 def choose_base_inds_numpy(y: np.ndarray, num_choose: int, how: Literal['max','min'] = 'max', strategy: Literal['uniform','skewed'] = 'uniform', seed: Optional[int] = None):
@@ -161,7 +217,7 @@ def process_runs_mean(model_name: str):
     print(f"    ✓ Loaded {run_count} runs for {model_name}")
     return pd.concat(all_df, axis=0) if all_df else pd.DataFrame()
 
-def create_random_baseline(n_runs):
+def create_random_baseline(n_runs, property_name):
     """Create baseline runs"""
     
     all_df = []
@@ -177,7 +233,7 @@ def create_random_baseline(n_runs):
         
         # Calculate cummax FE for this run
         current_run['cummax FE'] = df_triplet_means.loc[
-            current_run['chosen_triplets'], config["property_name"]
+            current_run['chosen_triplets'], property_name
         ].cummax().values
         
         # Add step column (offset by 2 to match old convention)
@@ -203,283 +259,162 @@ if __name__ == '__main__':
     parser.add_argument('config', type=str, help='Path to YAML config file')
     args = parser.parse_args()
 
-    print("="*70)
-    print("ACTIVE LEARNING EXPERIMENT SUITE")
-    print("="*70)
-    
-    print("\n[1/6] Loading configuration...")
     with open(args.config) as f:
-        config = yaml.load(f, Loader=yaml.FullLoader)
-    
-    OUTPUT_BASE = Path(config["run_name"])
-    print(f"  Output directory: {OUTPUT_BASE}")
-    OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
+        raw = yaml.load(f, Loader=yaml.FullLoader)
+    base_configs = raw if isinstance(raw, list) else [raw]
 
-    k_step = config.get('k_step', 9)
-    
-    # Load data once
-    print("[2/6] Loading experimental data...")
-    dataset = config.get("dataset", "gas")
-    data_file = config.get("data_file", None)
-    if data_file is not None:
-        p = Path(data_file)
-        if not p.is_absolute():
-            p = Path(__file__).resolve().parent / p
-        data_file = p
-    if dataset == "bicarb":
-        df = load_bicarb_data(filepath=data_file)
-    elif dataset == "gas":
-        df, config["current_density"] = load_gas_data(file=data_file)
-    else:
-        raise ValueError(f"Unknown dataset: {dataset}")
-    
-    print(f"  ✓ Loaded {len(df)} data points from {dataset} dataset")
-    
-    # Determine output labels based on dataset
-    if dataset == "bicarb":
-        output_labels = ["FE_CO", "CO2 utilization"]
-    elif dataset == "gas":
-        output_labels = ["FE (Eth)", "FE (CO)"]
-    else:
-        raise ValueError(f"Unknown dataset: {dataset}")
+    for base_config in base_configs:
+        combo_configs = list(expand_config(base_config))
+        print("=" * 70)
+        print(f"BASE CONFIG: {base_config['run_name']}  ({len(combo_configs)} combination(s))")
+        print("=" * 70)
 
-    # Determine input labels from non-constant columns
-    exclude_cols = {"triplet"} | set(output_labels)
-    input_labels = [col for col in df.columns 
-                    if col not in exclude_cols and df[col].nunique() > 1]
-    print(f"  Input features: {input_labels}")
-
-    df = df[df.loc[:,output_labels].notna().all(axis=1)]
-
-    df_triplet_means = df.groupby('triplet').mean()
-    best_id = int(df_triplet_means[config["property_name"]].idxmax())
-
-    config["input_labels"] = input_labels
-    config["output_labels"] = output_labels
-    
-    if not config["use_existing_results"]:
-        
-        print("\n[3/6] Running new experiments...")
-        torch.manual_seed(config["torch_seed"])
-        print(f"  Set torch seed to {config['torch_seed']}")
-        
-        total_runs = len(config["models"]) * len(list(config.get("runs", range(config["num_runs"]))))
-        run_num = 0
-        
-        for model in config["models"]:
-            print(f"\n  → Starting experiments for {model.upper()}...")
-            
-            for run_idx in config.get("runs", range(config["num_runs"])):
-                run_num += 1
-                print(f"\n{'='*70}")
-                print(f"RUN {run_num}/{total_runs}: {model.upper()} (Seed {run_idx})")
-                print(f"{'='*70}")
-                run_active_learning_experiment(model, run_idx, config)
-                print(f"✓ Completed {model} run {run_idx+1}/{config['num_runs']}")
-                
-        print("\n" + "="*70)
-        print("✓ All experiments completed!")
-        print("="*70)
-        if args.no_plot:
-            print("\nSkipping plots (--no-plot flag set)")
-            sys.exit(0)
-        print("\nGenerating plots...")
-    if config["use_existing_results"]:
-        print("\n[3/6] Using existing results (use_existing_results=True)")
-    
-    # ========================================================================
-    # Plot 1: 2x2 grid - one subplot per model
-    # ========================================================================
-    print("\n[4/6] Generating 2x2 grid plot...")
-    fig, ax = plt.subplots(ncols=3, nrows=2, figsize=(15, 8), sharex=True, sharey=True)
-    all_data = []
-
-    combined_csv = OUTPUT_BASE / 'all_runs_combined.csv'
-
-    if not combined_csv.exists():
-
-        for i, model_name in enumerate(config["models"]):
-            print(f"  Processing subplot for {model_name}...")
-            _df = process_runs_mean(model_name)
-            _df = _df[_df['step'] >= 0]
-        
-            all_data.append(_df)
-        
-        all_df = pd.concat(all_data, axis=0)
-        
-        all_df.to_csv(combined_csv, index=False)
-
-    else:
-
-        print(f"  Loading combined data from {combined_csv}...")
-        all_df = pd.read_csv(combined_csv)
-
-    baseline_df = create_random_baseline(n_runs=config["num_runs"]*100)
-
-    all_df_baseline = pd.concat([all_df, baseline_df], axis=0)
-        
-    for i, model_name in enumerate(config["models"]+["baseline"]):    
-
-        _df = all_df_baseline[all_df_baseline['model'] == model_name]
-        
-        sns.lineplot(
-            data=_df, 
-            x='step', 
-            y='cummax FE', 
-            hue='dname', 
-            legend=False, 
-            ax=ax[i // 3, i % 3]
-        )
-        ax[i // 3, i % 3].set_title(model_name, fontsize=12, fontweight='bold')
-        ax[i // 3, i % 3].set_ylabel('Cumulative max of ' + config["property_name"])
-        ax[i // 3, i % 3].set_xlabel('Step')
-        
-    
-    fig.tight_layout()
-    fig.savefig(OUTPUT_BASE / 'cummax_FE_grid.png', dpi=300, bbox_inches='tight')
-    print(f"  ✓ Saved: {OUTPUT_BASE / 'cummax_FE_grid.png'}")
-    plt.close()
-    
-    # ========================================================================
-    # Plot 2: Combined - all models on one plot
-    # ========================================================================
-    print("\n[5/6] Generating combined model comparison plot...")
-    
-    plt.figure(figsize=(5, 5))
-    sns.lineplot(
-        data=all_df_baseline, 
-        x='step', 
-        y='cummax FE', 
-        hue='model', 
-        marker='o', 
-        ms=5,
-        hue_order=config["models"] + ["baseline"],
-        palette=["limegreen", "darkgreen", "blue", "darkblue", "Gray"],
-    )
-    plt.axvline(x=k_step, color='gray', linestyle='--')
-    plt.ylabel('Cumulative max of ' + config["property_name"])
-    plt.xlabel('Step #')
-    plt.legend(title='Model', loc='lower right')
-    plt.tight_layout()
-    plt.savefig(OUTPUT_BASE / 'active_learning_combined.png', dpi=300, bbox_inches='tight')
-    print(f"  ✓ Saved: {OUTPUT_BASE / 'active_learning_combined.png'}")
-    plt.close()
-    
-    # Reset index to avoid duplicate label issues in seaborn
-    all_df = all_df.reset_index(drop=True)
-    
-    # ========================================================================
-    # Plot 3: NLL over steps (training quality metric)
-    # ========================================================================
-    if 'nll' in all_df.columns:
-        print("  Generating NLL vs step plot...")
-        plt.figure(figsize=(5, 4))
-        sns.lineplot(
-            data=all_df[all_df['step'] >= 0], 
-            x='step', 
-            y='nll', 
-            hue='model',
-            errorbar='sd'
-        )
-        plt.ylabel('NLL (Negative Log-Likelihood)')
-        plt.xlabel('Step')
-        plt.title('Model Uncertainty (NLL) vs Active Learning Step')
-        plt.legend(title='Model', bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.tight_layout()
-        plt.savefig(OUTPUT_BASE / 'nll_over_steps.png', dpi=300, bbox_inches='tight')
-        print(f"  ✓ Saved: {OUTPUT_BASE / 'nll_over_steps.png'}")
-        plt.close()
-    
-    # ========================================================================
-    # Plot 4: Loss (MSE) over steps (training fit quality)
-    # ========================================================================
-    if 'loss' in all_df.columns:
-        print("  Generating Loss vs step plot...")
-        plt.figure(figsize=(5, 4))
-        sns.lineplot(
-            data=all_df[all_df['step'] >= 0], 
-            x='step', 
-            y='loss', 
-            hue='model',
-            errorbar='sd'
-        )
-        plt.ylabel('Training loss')
-        plt.xlabel('Step')
-        plt.title('Training Loss vs Active Learning Step')
-        plt.legend(title='Model', bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.tight_layout()
-        plt.savefig(OUTPUT_BASE / 'loss_over_steps.png', dpi=300, bbox_inches='tight')
-        print(f"  ✓ Saved: {OUTPUT_BASE / 'loss_over_steps.png'}")
-        plt.close()
-    
-    # ========================================================================
-    # Summary statistics
-    # ========================================================================
-    print("\n[6/6] Computing summary statistics...")
-    print("\n" + "="*70)
-    print("SUMMARY STATISTICS")
-    print("="*70)
-
-    stats = dict()
-    
-    for model_name in all_df_baseline["model"].unique():
-        print(f"\n{model_name.upper()}:")
-        steps_to_finish = []
-        final_nlls = []
-        val_at_kstep = []
-
-        df_model = all_df_baseline.loc[all_df_baseline["model"]==model_name]
-        
-        for run in df_model['dname'].unique():
-            chosen_df = df_model[df_model['dname'] == run]
-            
-            # Collect final NLL value (last non-NaN).
-            try:
-                final_nlls.append(chosen_df['nll'].dropna().iat[-1])
-            except Exception:
-                # missing column or all-NaN -> skip
-                pass
-            
-            # Find step where cummax FE becomes max
-            filtered = chosen_df[chosen_df['cummax FE'] >= df_triplet_means.loc[best_id, config["property_name"]] - 1e-8]
-            if not filtered.empty:
-                # First step where threshold was crossed
-                step_to_max = filtered['step'].iloc[0]
-                # Record steps to finish
-                if step_to_max == 0:
-                    print(f"    Run {run} started at max FE (step 0).")
-                steps_to_finish.append(step_to_max)
-            else:
-                print(f"    Run {run} did not reach the target FE threshold.")
-
-            val_at_kstep.append(chosen_df[chosen_df['step'] == k_step]['cummax FE'])
-            
-                
-        if steps_to_finish:
-            sf = np.array(steps_to_finish)
-            sf[sf < 0] = 0
-            mean_steps = np.mean(sf)
-            std_steps = np.std(sf)
-            accel_factor = ((len(df_triplet_means)+1)/2-3) / mean_steps if mean_steps > 0 else np.inf
-            
-            print(f"  Runs analyzed: {len(df_model['dname'].unique())}")
-            print(f"  Mean steps to max FE: {mean_steps:.2f} ± {std_steps:.2f}")
-
-            stats[model_name] = {"Mean Steps": mean_steps, "Std Steps": std_steps, "Acceleration Factor": accel_factor, "Val at step k": np.mean(val_at_kstep), "Val at step k std": np.std(val_at_kstep)}
-
-            if final_nlls:
-                print(f"  Final NLL: {np.mean(final_nlls):.4f} ± {np.std(final_nlls):.4f}")
-                stats[model_name]["Final NLL mean"] = np.mean(final_nlls)
-                stats[model_name]["Final NLL std"] = np.std(final_nlls)
-            print(f"  Acceleration factor: {accel_factor:.2f}x")
-            print(f"  FE at step {k_step}: {np.mean(val_at_kstep):.4f} ± {np.std(val_at_kstep):.4f}")
-            
+        # Load data once — all combos in a base_config share the same dataset
+        dataset = base_config.get("dataset", "gas")
+        data_file = base_config.get("data_file", None)
+        if data_file is not None:
+            p = Path(data_file)
+            if not p.is_absolute():
+                p = Path(__file__).resolve().parent / p
+            data_file = p
+        if dataset == "bicarb":
+            df = load_bicarb_data(filepath=data_file)
+            output_labels = ["FE_CO", "CO2 utilization"]
+        elif dataset == "gas":
+            df, _cd = load_gas_data(file=data_file)
+            output_labels = ["FE (Eth)", "FE (CO)"]
         else:
-            print(f"  No data available for {model_name}") 
+            raise ValueError(f"Unknown dataset: {dataset}")
+        exclude_cols = {"triplet"} | set(output_labels)
+        input_labels = [c for c in df.columns if c not in exclude_cols and df[c].nunique() > 1]
+        df = df[df.loc[:, output_labels].notna().all(axis=1)]
+        df_triplet_means = df.groupby('triplet').mean()
+        best_id = int(df_triplet_means[base_config["property_name"]].idxmax())
+        print(f"  Loaded {len(df)} data points  |  inputs: {input_labels}")
 
-    stats_df = pd.DataFrame(stats).T
-    stats_df.to_csv(OUTPUT_BASE / 'summary_statistics.csv')
-            
-    print("\n" + "="*70)
-    print("✓ Analysis complete!")
-    print("="*70 + "\n")
+        baseline_df = create_random_baseline(base_config["num_runs"] * 100, base_config["property_name"])
+        baseline_df["combo"] = "baseline"
+        combo_palette, combo_markers = build_combo_style(combo_configs)
+        combo_dfs = []
+
+        for config in combo_configs:
+            print(f"\n{'─'*70}")
+            print(f"  COMBO: {config['run_name']}")
+            print(f"{'─'*70}")
+
+            OUTPUT_BASE = Path(config["run_name"])
+            OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
+            k_step = config.get('k_step', 9)
+
+            if dataset == "gas":
+                config["current_density"] = _cd
+            config["input_labels"] = input_labels
+            config["output_labels"] = output_labels
+
+            # ── run experiments ──────────────────────────────────────────────
+            if not config["use_existing_results"]:
+                torch.manual_seed(config["torch_seed"])
+                model = config["models"]
+                run_indices = list(config.get("runs", range(config["num_runs"])))
+                for i, run_idx in enumerate(run_indices):
+                    print(f"\n  RUN {i+1}/{len(run_indices)}: {model.upper()} (seed {run_idx})")
+                    run_active_learning_experiment(model, run_idx, config)
+                print(f"\n  ✓ All runs done for {config['run_name']}")
+            else:
+                print("  Using existing results.")
+
+            # ── collect results (always, for stats and combined plot) ─────────
+            _df_runs = process_runs_mean(config["models"])
+            _df_runs = _df_runs[_df_runs['step'] >= 0].reset_index(drop=True)
+            _df_runs["combo"] = config["run_name"]
+            combo_dfs.append(_df_runs)
+
+            if args.no_plot:
+                continue
+
+            # ── per-combo plots ──────────────────────────────────────────────
+            name = config["run_name"]
+            _df_runs.to_csv(OUTPUT_BASE / 'cummax_FE.csv')
+            plt.figure(figsize=(5, 5))
+            sns.lineplot(data=_df_runs, x='step', y='cummax FE',
+                         hue='dname', legend=False)
+            plt.axvline(x=k_step, color='gray', linestyle='--')
+            plt.ylabel('Cumulative max of ' + config["property_name"])
+            plt.xlabel('Step #')
+            plt.tight_layout()
+            plt.savefig(OUTPUT_BASE / 'cummax_FE.svg', bbox_inches='tight')
+            plt.close()
+            print(f"  ✓ {OUTPUT_BASE / 'cummax_FE.svg'}")
+
+            for metric, ylabel, title in [
+                ('nll',  'NLL',           'NLL vs step'),
+                ('loss', 'Training loss', 'Loss vs step'),
+            ]:
+                if metric not in _df_runs.columns:
+                    continue
+                _df_runs[['step', 'dname', metric]].to_csv(OUTPUT_BASE / f'{metric}_over_steps.csv')
+                plt.figure(figsize=(5, 4))
+                sns.lineplot(data=_df_runs, x='step', y=metric, errorbar='sd')
+                plt.ylabel(ylabel)
+                plt.xlabel('Step')
+                plt.title(title)
+                plt.tight_layout()
+                plt.savefig(OUTPUT_BASE / f'{metric}_over_steps.svg', bbox_inches='tight')
+                plt.close()
+
+        # ── summary statistics (once, over all combos + baseline) ────────────
+        if not combo_dfs:
+            continue
+
+        k_step = base_config.get('k_step', 9)
+        config = combo_configs[-1]  # any combo config; property_name is shared
+        all_combos_df = pd.concat(combo_dfs + [baseline_df], ignore_index=True)
+        combo_order = [c["run_name"] for c in combo_configs] + ["baseline"]
+
+        print(f"\n{'='*70}\nSUMMARY STATISTICS\n{'='*70}")
+        stats = {}
+        for combo_name in combo_order:
+            df_combo = all_combos_df[all_combos_df["combo"] == combo_name]
+            steps_to_finish, final_nlls, val_at_kstep = [], [], []
+            for run in df_combo['dname'].unique():
+                chosen_df = df_combo[df_combo['dname'] == run]
+                try:
+                    final_nlls.append(chosen_df['nll'].dropna().iat[-1])
+                except Exception:
+                    pass
+                filtered = chosen_df[chosen_df['cummax FE'] >= df_triplet_means.loc[best_id, config["property_name"]] - 1e-8]
+                if not filtered.empty:
+                    steps_to_finish.append(filtered['step'].iloc[0])
+                val_at_kstep.append(chosen_df[chosen_df['step'] == k_step]['cummax FE'])
+            if steps_to_finish:
+                sf = np.clip(np.array(steps_to_finish), 0, None)
+                accel = ((len(df_triplet_means) + 1) / 2 - 3) / sf.mean() if sf.mean() > 0 else np.inf
+                stats[combo_name] = {"Mean Steps": sf.mean(), "Std Steps": sf.std(),
+                                     "Acceleration Factor": accel,
+                                     "Val at step k": np.mean(val_at_kstep),
+                                     "Val at step k std": np.std(val_at_kstep)}
+                print(f"  {combo_name}: {sf.mean():.1f}±{sf.std():.1f} steps  accel={accel:.2f}x  "
+                      f"FE@{k_step}={np.mean(val_at_kstep):.4f}")
+
+        base_out = Path(base_config["run_name"])
+        base_out.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(stats).T.to_csv(base_out / 'summary_statistics.csv')
+
+        # ── combined comparison plot ──────────────────────────────────────────
+        if args.no_plot or len(combo_dfs) < 2:
+            continue
+
+        all_combos_df.to_csv(base_out / 'comparison.csv')
+        plt.figure(figsize=(6, 5))
+        sns.lineplot(data=all_combos_df, x='step', y='cummax FE',
+                     hue='combo', style='combo',
+                     palette=combo_palette, markers=combo_markers,
+                     hue_order=combo_order, dashes=False, markersize=5)
+        plt.axvline(x=k_step, color='gray', linestyle='--')
+        plt.ylabel('Cumulative max of ' + base_config["property_name"])
+        plt.xlabel('Step #')
+        plt.legend(title='Config', loc='lower right', fontsize=8)
+        plt.tight_layout()
+        plt.savefig(base_out / 'comparison.svg', bbox_inches='tight')
+        plt.close()
+        print(f"\n  ✓ Combined plot: {base_out / 'comparison.svg'}")
