@@ -7,25 +7,24 @@ See our paper: [A physics-based data-driven model for CO2 gas diffusion electrod
 ## Install
 
 ```
-pip install git+https://github.com/igrega348/CO2-catalysis.git@active_learning_api
+pip install git+https://github.com/ftherrien/CarbonDriver.git
 ```
 
 ## Example
 
 ```
- from carbondriver import GDEOptimizer
- from carbondriver.loaders import load_data
- 
- gde = GDEOptimizer("MLP", output_dir="./tmp_test_out")
+from carbondriver import GDEOptimizer
+from carbondriver.loaders import load_gas_data
 
- _, _, _, _, df = load_data("paper/Characterization_data.xlsx")
+# Data to start with (could be any df)
+df, current_density = load_gas_data(data_path)
 
- df_train = df.loc[:30]
- df_explore = df.loc[31:]
+config = {"current_density": current_density}
+             
+gde = GDEOptimizer("Ph", config=config, output_dir="./tmp_test_out")
 
- ei, next_pick = gde.step_within_data(df_train, df_explore)
+ei, next_pick = gde.step(df)
 
- print("The next experiment to try is the following:")
- print(df_explore.iloc[int(next_pick)])
+print(f"Your next experiment should be:", next_pick)
 
 ```
