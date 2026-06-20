@@ -171,6 +171,7 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
         'loss': loss_values,
     })
     results_df.to_csv(run_dir / 'chosen_triplets.csv')
+    yaml.dump(config, open(run_dir / 'config.yaml', 'w'))
     print(f"  Results saved to {run_dir / 'chosen_triplets.csv'}")
     
     return run_dir
