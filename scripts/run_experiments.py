@@ -16,21 +16,23 @@ import torch
 import yaml
 import sys
 import argparse
+from glob import iglob
 
 # Keys that are always lists and never create cartesian-product combinations.
 # Also never put 'dataset' or 'data_file' in a list — all combos must share the same data.
-ALWAYS_LIST_KEYS = {'runs', 'input_labels', 'output_labels'}
+DO_NOT_EXPAND_KEYS = {'runs', 'input_labels', 'output_labels'}
 
 
-def expand_config(base_config: dict):
+def expand_config(base_config: dict, do_not_expand: set = DO_NOT_EXPAND_KEYS):
     """Yield one sub-config per combination of list-valued params.
 
-    Every param whose value is a list (except ALWAYS_LIST_KEYS) becomes an
+    Every param whose value is a list (except DO_NOT_EXPAND_KEYS) becomes an
     axis of the cartesian product.  Each sub-config has scalar values for
     those params and a run_name suffixed with their values, e.g. "run-GP-EI".
     """
+    
     var_keys = [k for k, v in base_config.items()
-                if isinstance(v, list) and k not in ALWAYS_LIST_KEYS]
+                if isinstance(v, list) and k not in DO_NOT_EXPAND_KEYS]
     if not var_keys:
         yield base_config
         return
@@ -176,15 +178,21 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
     
     return run_dir
 
-def process_runs_mean(model_name: str):
+def process_runs_mean(dirname):
     """Process all runs for a given model and return aggregated DataFrame."""
-    print(f"  Processing results for {model_name}...")
+    print(f"  Processing results for {dirname}...")
     all_df = []
     run_count = 0
     
-    for run_dir in OUTPUT_BASE.glob(model_name + '_run_*/'):
+    for run_dir in Path(dirname).glob('*_run_*/'):
         if not run_dir.is_dir():
             continue
+
+        if not (run_dir / 'config.yaml').exists():
+            return None, None
+        
+        with open(run_dir / 'config.yaml') as f:
+            config = yaml.load(f, Loader=yaml.FullLoader)
         
         results_file = run_dir / 'chosen_triplets.csv'
         if not results_file.exists():
@@ -210,13 +218,15 @@ def process_runs_mean(model_name: str):
         i0 = 2
         chosen_df['step'] = chosen_df.index - i0
         chosen_df['dname'] = run_dir.stem
-        chosen_df['model'] = model_name
+        chosen_df['model'] = config["models"]
         
         all_df.append(chosen_df)
         run_count += 1
     
-    print(f"    ✓ Loaded {run_count} runs for {model_name}")
-    return pd.concat(all_df, axis=0) if all_df else pd.DataFrame()
+    print(f"    ✓ Loaded {run_count} runs for {dirname}")
+    if run_count == 0:
+        return None, None
+    return (pd.concat(all_df, axis=0) if all_df else pd.DataFrame()), config
 
 def create_random_baseline(n_runs, property_name):
     """Create baseline runs"""
@@ -295,7 +305,6 @@ if __name__ == '__main__':
 
         baseline_df = create_random_baseline(base_config["num_runs"] * 100, base_config["property_name"])
         baseline_df["combo"] = "baseline"
-        combo_palette, combo_markers = build_combo_style(combo_configs)
         combo_dfs = []
 
         for config in combo_configs:
@@ -319,13 +328,28 @@ if __name__ == '__main__':
                 run_indices = list(config.get("runs", range(config["num_runs"])))
                 for i, run_idx in enumerate(run_indices):
                     print(f"\n  RUN {i+1}/{len(run_indices)}: {model.upper()} (seed {run_idx})")
-                    run_active_learning_experiment(model, run_idx, config)
+                    try:
+                        run_active_learning_experiment(model, run_idx, config)
+                    except Exception as e:
+                        print(f"    ✗ Run {run_idx} failed with error: {e}")
                 print(f"\n  ✓ All runs done for {config['run_name']}")
             else:
                 print("  Using existing results.")
 
+        combo_configs = []
+        for dirname in iglob(base_config["run_name"] + "/*"):
+            
+            OUTPUT_BASE = Path(dirname)
+
+            if not OUTPUT_BASE.is_dir():
+                continue
+            
             # ── collect results (always, for stats and combined plot) ─────────
-            _df_runs = process_runs_mean(config["models"])
+            _df_runs, config = process_runs_mean(dirname)
+            if config is None:
+                print(f"  ✗ No valid runs found in {dirname}, skipping.")
+                continue
+            combo_configs.append(config)
             _df_runs = _df_runs[_df_runs['step'] >= 0].reset_index(drop=True)
             _df_runs["combo"] = config["run_name"]
             combo_dfs.append(_df_runs)
@@ -404,6 +428,8 @@ if __name__ == '__main__':
         # ── combined comparison plot ──────────────────────────────────────────
         if args.no_plot or len(combo_dfs) < 2:
             continue
+
+        combo_palette, combo_markers = build_combo_style(combo_configs)
 
         all_combos_df.to_csv(base_out / 'comparison.csv')
         plt.figure(figsize=(6, 5))

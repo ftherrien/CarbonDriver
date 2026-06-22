@@ -15,14 +15,17 @@ from scipy.stats import pearsonr
 import torch
 import yaml
 import argparse
+from glob import iglob
 
 from carbondriver import GDEOptimizer
 from carbondriver.loaders import load_gas_data, load_bicarb_data
 
 sys.path.insert(0, str(Path(__file__).parent))
 from run_experiments import (
-    choose_base_inds_numpy, expand_config, build_combo_style, ALWAYS_LIST_KEYS,
+    choose_base_inds_numpy, expand_config, build_combo_style, DO_NOT_EXPAND_KEYS,
 )
+
+DO_NOT_EXPAND_KEYS = DO_NOT_EXPAND_KEYS | {"acquisition", "UCB_beta", "EI_reference"}
 
 N_EVAL = 10  # held-out triplets for evaluation
 N_INIT = 3   # initial training triplets
@@ -101,7 +104,7 @@ if __name__ == '__main__':
     base_configs = raw if isinstance(raw, list) else [raw]
 
     for base_config in base_configs:
-        combo_configs = list(expand_config(base_config))
+        combo_configs = list(expand_config(base_config, do_not_expand=DO_NOT_EXPAND_KEYS))
         print("=" * 70)
         print(f"BASE CONFIG: {base_config['run_name']}  ({len(combo_configs)} combo(s))")
         print("=" * 70)
@@ -129,13 +132,12 @@ if __name__ == '__main__':
         all_triplet_ids  = df_triplet_means.index.tolist()
         print(f"  Loaded {len(df)} pts  |  {len(all_triplet_ids)} triplets  |  inputs: {input_labels}")
 
-        combo_palette, combo_markers = build_combo_style(combo_configs)
         combo_dfs = []
 
         for config in combo_configs:
             print(f"\n{'─'*70}\n  COMBO: {config['run_name']}\n{'─'*70}")
 
-            OUTPUT_BASE = Path(config["run_name"])
+            OUTPUT_BASE = Path(config["run_name"] + "_perf")
             OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
 
             if dataset == "gas":
@@ -166,34 +168,53 @@ if __name__ == '__main__':
                     rest_shuffled = np.random.default_rng(run_idx).permutation(rest).tolist()
                     train_order   = init_ids + rest_shuffled
 
-                    run_df = assess_run(model, run_idx, config, eval_ids, train_order)
-                    all_run_dfs.append(run_df)
+                    try:
+                        run_df = assess_run(model, run_idx, config, eval_ids, train_order)
+                        all_run_dfs.append(run_df)
+                    except Exception as e:
+                        print(f"  Error in run {run_idx}: {e}")
 
                 result_df = pd.concat(all_run_dfs, ignore_index=True)
                 result_df.to_csv(OUTPUT_BASE / 'assessment.csv', index=False)
-
+                yaml.dump(config, (OUTPUT_BASE / 'config.yaml').open('w'))
+                
+                result_df["combo"] = config["run_name"]
+                combo_dfs.append(result_df)
+                
             else:
-                result_df = pd.read_csv(OUTPUT_BASE / 'assessment.csv')
                 print("  Using existing results.")
 
-            result_df["combo"] = config["run_name"]
+        combo_configs = []
+        for dirname in iglob(base_config["run_name"] + "/*"):
+            
+            OUTPUT_BASE = Path(dirname)
+
+            if not OUTPUT_BASE.is_dir() or not (OUTPUT_BASE / 'assessment.csv').exists():
+                continue
+                
+            result_df = pd.read_csv(OUTPUT_BASE / 'assessment.csv')
+
+            result_df["combo"] = dirname
             combo_dfs.append(result_df)
 
+            combo_configs.append({"models": result_df["model"].iloc[0], "run_name": dirname})
+
+        combo_palette, combo_markers = build_combo_style(combo_configs)
+        
         if args.no_plot or not combo_dfs:
             continue
 
         # ── 4-panel combined plot (2 metrics × 2 output labels) ──────────────
         base_out    = Path(base_config["run_name"])
         base_out.mkdir(parents=True, exist_ok=True)
-        config      = combo_configs[-1]
+        config      = base_config
         all_df      = pd.concat(combo_dfs, ignore_index=True)
         combo_order = [c["run_name"] for c in combo_configs]
-        labels      = config["output_labels"]
         metrics     = [("nll", "NLL"), ("corr", "Pearson R")]
 
         fig, axes = plt.subplots(2, 2, figsize=(10, 7), sharex=True)
         for col, (metric_key, metric_label) in enumerate(metrics):
-            for row, label in enumerate(labels):
+            for row, label in enumerate(output_labels):
                 ax       = axes[row, col]
                 col_name = f"{metric_key}_{label}"
                 safe     = label.replace(' ', '_').replace('/', '_')
@@ -203,11 +224,12 @@ if __name__ == '__main__':
                 )
                 sns.lineplot(data=all_df, x='n_train', y=col_name,
                              hue='combo', style='combo',
-                             palette=combo_palette, markers=combo_markers,
-                             hue_order=combo_order, dashes=False, markersize=4, ax=ax)
+                             hue_order=combo_order, palette=combo_palette, markers=combo_markers,
+                             dashes=False, markersize=4, ax=ax)
                 ax.set_title(f"{metric_label} — {label}")
                 ax.set_xlabel("# training triplets")
                 ax.set_ylabel(metric_label)
+                ax.set_ylim(top=0 if metric_key == "nll" else 1, bottom= 0 if metric_key == "corr" else -1)
                 if row == 0 and col == 0:
                     ax.legend(title='Config', fontsize=7, loc='best')
                 elif ax.get_legend():
@@ -216,4 +238,11 @@ if __name__ == '__main__':
         fig.tight_layout()
         fig.savefig(base_out / 'assessment.svg', bbox_inches='tight')
         plt.close()
+
+        all_df.to_csv(base_out / 'assessment_all.csv', index=False)
+
+        means = all_df.loc[:, ['n_train', 'corr_FE_CO', 'nll_FE_CO', 'corr_CO2 utilization', 'nll_CO2 utilization', 'combo']].groupby(["combo", "n_train"]).mean()
+
+        means.to_csv(base_out / 'assessment_means.csv')
+        
         print(f"\n  ✓ {base_out / 'assessment.svg'}")
