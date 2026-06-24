@@ -24,4 +24,5 @@ default_config = {
         "You are an expert scientist helping to optimize an experiment. "
         "Use your domain knowledge along with the experimental data provided to make informed suggestions."
     ),
+    "llm_max_attempts": 3,
 }
