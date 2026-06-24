@@ -403,9 +403,19 @@ class GDEOptimizer:
         if api == "gemini":
             from google import genai
             client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(
-                model=self.config["llm_model"],
-                contents=[system, user])
+            attempt = 0
+            for attempt in range(self.config.get("llm_max_attempts", 3)):
+                try:
+                    response = client.models.generate_content(
+                        model=self.config["llm_model"],
+                        contents=[system, user])
+                    break
+                except Exception as e:
+                    if attempt + 1 == self.config.get("llm_max_attempts", 3):
+                        raise
+                    else:
+                        print(f"LLM API call failed (attempt {attempt+1}/{self.config.get('llm_max_attempts', 3)}): {e}")
+                    
             text = response.text
 
         elif api == "openai":
@@ -420,8 +430,8 @@ class GDEOptimizer:
             text = response.choices[0].message.content
 
         elif api == "claude":
-            import anthropic
-            response = anthropic.Anthropic(api_key=api_key).messages.create(
+            from anthropic import Anthropic
+            response = Anthropic(api_key=api_key).messages.create(
                 model=self.config["llm_model"],
                 max_tokens=1024,
                 system=system,

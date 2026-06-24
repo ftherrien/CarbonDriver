@@ -1,11 +1,12 @@
 run_name: llm_test_results
 dataset: bicarb
 num_runs: 1
-
 models: ["LLM"]
-llm_api: "gemini"      # "gemini", "openai", or "claude"
-llm_model: "gemini-3.5-flash"
-llm_api_key_env: "GEMINI_API_KEY"  # name of the env var holding the API key
+llm_max_attempts: 5
+llm_api: "claude"      # "gemini", "openai", or "claude"
+# llm_model: "gemini-3.5-flash"
+llm_model: "claude-haiku-4-5-20251001"
+# llm_model: "gpt-5.4-mini"
 llm_experiment_context: "You are an expert chemist helping to optimize an experiment. Use your domain knowledge along with the experimental data provided to make informed suggestions. The system is a bicarbonate (liquid) to CO electrlyzer. "
 
 property_name: 'FE_CO'
