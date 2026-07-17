@@ -385,6 +385,7 @@ class GDEOptimizer:
         mode: str,
         bounds: Optional[torch.Tensor] = None,
         possible_data: Optional[pd.DataFrame] = None,
+        error_message: Optional[str] = None,
     ) -> dict:
         """
         Call the configured LLM API to suggest the next experiment.
@@ -396,25 +397,19 @@ class GDEOptimizer:
         """
         api = self.config.get("llm_api", "gemini")
         system = self.config["llm_experiment_context"]
-        user = self._create_prompt(mode, bounds=bounds, possible_data=possible_data)
-
+        if error_message is not None:
+            user = f"Parsing of your previous output failed with error: {error_message}\n\n"
+        else:
+            user = self._create_prompt(mode, bounds=bounds, possible_data=possible_data)
+        
         api_key = self.config.get("llm_api_key", None)
 
         if api == "gemini":
             from google import genai
             client = genai.Client(api_key=api_key)
-            attempt = 0
-            for attempt in range(self.config.get("llm_max_attempts", 3)):
-                try:
-                    response = client.models.generate_content(
-                        model=self.config["llm_model"],
-                        contents=[system, user])
-                    break
-                except Exception as e:
-                    if attempt + 1 == self.config.get("llm_max_attempts", 3):
-                        raise
-                    else:
-                        print(f"LLM API call failed (attempt {attempt+1}/{self.config.get('llm_max_attempts', 3)}): {e}")
+            response = client.models.generate_content(
+                model=self.config["llm_model"],
+                contents=[system, user])
                     
             text = response.text
 
@@ -422,10 +417,7 @@ class GDEOptimizer:
             from openai import OpenAI
             response = OpenAI(api_key=api_key).chat.completions.create(
                 model=self.config["llm_model"],
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user",   "content": user},
-                ],
+                messages=[{"role": "system", "content": system}] + self.raw_messages + [{"role": "user",   "content": user}],
             )
             text = response.choices[0].message.content
 
@@ -435,13 +427,17 @@ class GDEOptimizer:
                 model=self.config["llm_model"],
                 max_tokens=1024,
                 system=system,
-                messages=[{"role": "user", "content": user}],
+                messages=self.raw_messages + [{"role": "user", "content": user}],
             )
             text = response.content[0].text
 
         else:
             raise ValueError(f"Unsupported llm_api '{api}'. Choose 'gemini', 'openai', or 'claude'.")
 
+        self.raw_messages.extend([{"role": "user",   "content": user}, {"role": "assistant",   "content": text}])
+
+        print(f"Raw messages:\n{self.raw_messages}\n")
+        
         return self._read_response(text)
 
     def step(
@@ -457,9 +453,32 @@ class GDEOptimizer:
         self.update_data(new_data)
 
         if self.model == "LLM":
-            result = self._llm_suggest("step", bounds=bounds)
-            reason = result.pop("reason", None)
-            suggestion = {l: result[l] for l in self.input_labels}
+            attempt = 0
+            self.raw_messages = []  # Reset message history for this step
+            error_message = None
+            for attempt in range(self.config.get("llm_max_attempts", 3)):
+                try:
+                    result = self._llm_suggest("step", bounds=bounds, error_message=error_message)
+                    suggestion = {l: result[l] for l in self.input_labels}
+
+                except Exception as e:
+                    if attempt + 1 == self.config.get("llm_max_attempts", 3):
+                        print("LLM raw messages:")
+                        print(self.raw_messages)
+                        raise
+                    else:
+                        print(f"LLM call failed with error: {e}. Retrying (attempt {attempt + 1})...")
+                        error_message = repr(e)
+                        continue                        
+
+                reason = result.pop("reason", None)
+                    
+                if np.isclose(pd.Series(suggestion), self.df.loc[:, self.input_labels], rtol=self.config.get("similarity_tolerance", 1e-5)).all(axis=1).any():
+                    print("LLM suggested a point that is already in the dataset. Retrying...")
+                    error_message = "Your suggested experiment already exists in the dataset or is very close to an existing one."
+                    continue
+                break
+                
             self.llm_history.append({"step": self.i, "suggestion": suggestion, "reason": reason})
             if reason:
                 print(f"LLM reason: {reason}")
