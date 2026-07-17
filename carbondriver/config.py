@@ -25,4 +25,5 @@ default_config = {
         "Use your domain knowledge along with the experimental data provided to make informed suggestions."
     ),
     "llm_max_attempts": 3,
+    "similarity_tolerance": 1e-5,
 }
