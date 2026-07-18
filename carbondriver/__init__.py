@@ -620,9 +620,36 @@ class GDEOptimizer:
             possible_data = possible_data.drop(columns=self.output_labels, errors="ignore")
 
         if self.model == "LLM":
-            result = self._llm_suggest("step_within_data", possible_data=possible_data)
-            reason = result.get("reason")
-            best_df_index = result["index"]
+            self.raw_messages = []  # Reset message history for this step
+            error_message = None
+
+            for attempt in range(self.config.get("llm_max_attempts", 3)):
+                try:
+                    result = self._llm_suggest(
+                        "step_within_data",
+                        possible_data=possible_data,
+                        error_message=error_message,
+                    )
+                    best_df_index = result["index"]
+                    if best_df_index not in possible_data.index:
+                        raise KeyError(
+                            f"Index {best_df_index!r} is not in possible_data.index. "
+                            f"Valid indices are {possible_data.index.tolist()}."
+                        )
+                except Exception as error:
+                    if attempt + 1 == self.config.get("llm_max_attempts", 3):
+                        print("LLM raw messages:")
+                        print(self.raw_messages)
+                        raise
+                    print(
+                        f"LLM call failed with error: {error}. "
+                        f"Retrying (attempt {attempt + 1})..."
+                    )
+                    error_message = repr(error)
+                    continue
+
+                reason = result.get("reason")
+                break
             self.llm_history.append({"step": self.i, "suggestion": best_df_index, "reason": reason})
             if reason:
                 print(f"LLM reason: {reason}")
