@@ -186,7 +186,8 @@ class GDEOptimizer:
 
         self.df = pd.concat([self.df, new_data], axis=0)
 
-        self.df.sort_values(by="triplet", inplace=True)  # TMP
+        if "triplet" in self.df.columns:
+            self.df.sort_values(by="triplet", inplace=True)
 
     def get_predictor(self) -> Tuple[torch.nn.Module | BoTorchGP, pd.DataFrame]:
         """
