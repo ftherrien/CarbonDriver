@@ -426,11 +426,20 @@ class GDEOptimizer:
             from anthropic import Anthropic
             response = Anthropic(api_key=api_key).messages.create(
                 model=self.config["llm_model"],
-                max_tokens=1024,
+                max_tokens=self.config.get("llm_max_tokens", 1024),
                 system=system,
                 messages=self.raw_messages + [{"role": "user", "content": user}],
             )
-            text = response.content[0].text
+            # Claude may return thinking blocks before the final text block.
+            # Do not assume response.content[0] is a TextBlock.
+            text_blocks = [
+                block.text
+                for block in response.content
+                if getattr(block, "type", None) == "text"
+            ]
+            if not text_blocks:
+                raise ValueError("Claude response contained no text block")
+            text = "\n".join(text_blocks)
 
         else:
             raise ValueError(f"Unsupported llm_api '{api}'. Choose 'gemini', 'openai', or 'claude'.")
