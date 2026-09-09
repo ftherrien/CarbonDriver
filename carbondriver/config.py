@@ -16,6 +16,11 @@ default_config = {
     "current_density": None,
     "zero_eps_thickness": None,
     "t_CO2": None,
+    "torch_seed": None,
+    "electrode_area_cm2": 1.85**2,
+    "physics_mass_source": "Catalyst mass loading",
+    "physics_mass_scale": 1.0,
+    "physics_mass_units": "mg",
     # LLM-based active learning settings (used when model_name="LLM")
     "llm_api": "gemini",          # "gemini", "openai", or "claude"
     "llm_model": "gemini-3.5-flash",

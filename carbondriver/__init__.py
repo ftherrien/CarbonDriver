@@ -2,18 +2,102 @@ from .models import PhModel, MLPModel, MultitaskGPModel, BoTorchGP, MultitaskGPh
 from .train import train_model_ens, train_GP_model, train_GP_Ph_model
 from .loaders import feature_stats
 from .config import default_config
+from .domains import PhysicsDomain
 import pandas as pd
 import torch
 import numpy as np
 import os, json
 from typing import Tuple, Optional
+from botorch import fit_gpytorch_mll
 from botorch.acquisition.analytic import LogExpectedImprovement, ExpectedImprovement, ProbabilityOfImprovement, UpperConfidenceBound
+from botorch.models.gp_regression import SingleTaskGP
 from botorch.optim import optimize_acqf
 from botorch.acquisition.objective import ScalarizedPosteriorTransform
 import warnings
 import gpytorch
 
 SUPPORTED_AFs = ["EI", "logEI", "PI", "UCB"]
+
+
+class OptimizerTrainingError(RuntimeError):
+    """Raised when a model cannot be fitted safely enough to recommend a point."""
+
+
+def _candidate_scores(
+    scores: torch.Tensor, target_idx: int, num_candidates: int
+) -> torch.Tensor:
+    """Return one acquisition score per candidate without losing its axis."""
+    if not isinstance(scores, torch.Tensor):
+        raise RuntimeError("AF returned non-tensor scores, expected torch.Tensor")
+    if target_idx < 0:
+        raise RuntimeError(f"target_idx must be non-negative, received {target_idx}")
+
+    if scores.ndim == 0:
+        if num_candidates == 1:
+            return scores.reshape(1)
+        raise RuntimeError(
+            f"AF returned one scalar score for {num_candidates} candidates; "
+            "expected one score per candidate"
+        )
+    if scores.ndim == 1:
+        if scores.shape[0] != num_candidates:
+            raise RuntimeError(
+                f"AF scores shape {tuple(scores.shape)} does not match "
+                f"{num_candidates} candidates"
+            )
+        return scores
+    if scores.ndim == 2:
+        if scores.shape[0] != num_candidates:
+            raise RuntimeError(
+                f"AF scores shape {tuple(scores.shape)} has the candidate axis in "
+                "the wrong position; expected (N,) or (N, M)."
+            )
+        if scores.shape[1] == 0:
+            raise RuntimeError(f"AF scores shape {tuple(scores.shape)} has no score columns")
+        if scores.shape[1] == 1:
+            return scores[:, 0]
+        if target_idx >= scores.shape[1]:
+            raise RuntimeError(
+                f"AF scores shape {tuple(scores.shape)} has no output column "
+                f"{target_idx}"
+            )
+        return scores[:, target_idx]
+    raise RuntimeError(
+        f"AF scores must have shape (N,) or (N, M), received {tuple(scores.shape)}"
+    )
+
+
+def _canonical_label(label: str) -> str:
+    return "".join(ch for ch in str(label).lower() if ch.isalnum())
+
+
+class PhysicsOutputAdapter(torch.nn.Module):
+    """Select and optionally standardize physics-model output columns."""
+
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        output_indices: list[int],
+        output_means: np.ndarray | None = None,
+        output_stds: np.ndarray | None = None,
+    ) -> None:
+        super().__init__()
+        self.model = model
+        self.output_indices = output_indices
+        self.register_buffer(
+            "output_means",
+            None if output_means is None else torch.as_tensor(output_means, dtype=torch.float32),
+        )
+        self.register_buffer(
+            "output_stds",
+            None if output_stds is None else torch.as_tensor(output_stds, dtype=torch.float32),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        output = self.model(x)[..., self.output_indices]
+        if self.output_means is not None and self.output_stds is not None:
+            output = (output - self.output_means) / self.output_stds
+        return output
 
 
 class GDEOptimizer:
@@ -87,6 +171,8 @@ class GDEOptimizer:
         self.df = pd.DataFrame()
 
         self.llm_history = []  # list of {"step": i, "suggestion": ..., "reason": ...}
+        self.last_prediction_means = None
+        self.last_prediction_stds = None
 
         self._bounds = bounds
 
@@ -109,6 +195,58 @@ class GDEOptimizer:
         # Stats for normalization of feature columns (set in get_predictor when normalize=True)
         self._means = pd.Series(0.0, self.input_labels + self.output_labels)
         self._stds = pd.Series(1.0, self.input_labels + self.output_labels)
+
+    def _physical_output_indices(self) -> list[int]:
+        if self.config.get("dataset") == "bicarb":
+            physical_outputs = ["FE_CO", "CO2 utilization"]
+        else:
+            physical_outputs = ["FE (Eth)", "FE (CO)"]
+
+        canonical_outputs = {
+            _canonical_label(label): idx
+            for idx, label in enumerate(physical_outputs)
+        }
+        requested_indices = []
+        missing = []
+        for label in self.output_labels:
+            canonical_label = _canonical_label(label)
+            if canonical_label in canonical_outputs:
+                requested_indices.append(canonical_outputs[canonical_label])
+            else:
+                missing.append(label)
+
+        if missing:
+            raise ValueError(
+                "Physics-based Carbon Driver models can only predict "
+                f"{physical_outputs}. Requested unsupported objective(s): {missing}."
+            )
+
+        return requested_indices
+
+    def _make_physics_model(self, system_phase: str, dropout: float = 0.1) -> torch.nn.Module:
+        model = PhModel(
+            config=self.config,
+            dropout=dropout,
+            n_inputs=len(self.input_labels),
+            system_phase=system_phase,
+            means=self._means,
+            stds=self._stds,
+        )
+        output_indices = self._physical_output_indices()
+        normalize_outputs = self.config.get("normalize_outputs", False)
+        if output_indices != list(range(2)) or normalize_outputs:
+            output_means = None
+            output_stds = None
+            if normalize_outputs:
+                output_means = self._means[self.output_labels].to_numpy(dtype=float)
+                output_stds = self._stds[self.output_labels].to_numpy(dtype=float)
+            return PhysicsOutputAdapter(
+                model,
+                output_indices,
+                output_means=output_means,
+                output_stds=output_stds,
+            )
+        return model
 
     def _get_data_tensors(
         self, data: Optional[pd.DataFrame] = None, update_stats: bool = False
@@ -145,8 +283,14 @@ class GDEOptimizer:
 
         df_clean = (df_clean - self._means) / self._stds
 
-        X = torch.tensor(df_clean.loc[:, self.input_labels].values, dtype=torch.float32)
-        y = torch.tensor(df_clean.loc[:, output_labels].values, dtype=torch.float32)
+        X = torch.tensor(
+            np.ascontiguousarray(df_clean.loc[:, self.input_labels].to_numpy()),
+            dtype=torch.float32,
+        )
+        y = torch.tensor(
+            np.ascontiguousarray(df_clean.loc[:, output_labels].to_numpy()),
+            dtype=torch.float32,
+        )
 
         return X, y
 
@@ -195,6 +339,9 @@ class GDEOptimizer:
 
         :returns: (model, stats) tuple where model is the trained predictor and stats is a DataFrame with training metrics.
         """
+        if self.model in {PhModel, MultitaskGPhysModel}:
+            self._apply_configured_physics_seed()
+
         X, y = self._get_data_tensors(update_stats=True)
 
         system_phase = self.config.get("system_phase") or ("liquid" if self.config.get("dataset") == "bicarb" else "gas")
@@ -202,6 +349,15 @@ class GDEOptimizer:
         # Special handling for GP and GP+Ph models: these use gpytorch training functions
         # (they are not compatible with the ensemble training pipeline used for MLP/Ph).
         if self.model == MultitaskGPModel:
+            if len(self.output_labels) == 1:
+                model = SingleTaskGP(X.double(), y.double())
+                mll = gpytorch.mlls.ExactMarginalLogLikelihood(model.likelihood, model)
+                fit_gpytorch_mll(mll)
+                stats = pd.DataFrame(
+                    {"loss": [np.nan], "val_loss": [np.nan], "nll": [np.nan]},
+                    index=pd.Index([0], name="step"),
+                )
+                return model, stats
 
             # Train GP and return BoTorch-compatible model
             stats, _, model, likelihood = train_GP_model(
@@ -216,13 +372,7 @@ class GDEOptimizer:
         elif self.model == MultitaskGPhysModel:
             # GP+Physics: Ph model constructor must be provided to the GP+Ph trainer.
 
-            ph_model_constructor = lambda: PhModel(
-                config=self.config,
-                n_inputs=len(self.input_labels),
-                system_phase=system_phase,
-                means=self._means,
-                stds=self._stds
-            )
+            ph_model_constructor = lambda: self._make_physics_model(system_phase)
 
             # Train GP+Ph and return BoTorch-compatible model
             stats, _, model, likelihood = train_GP_Ph_model(
@@ -239,14 +389,7 @@ class GDEOptimizer:
         else:
             if self.model == PhModel:
 
-                model_factory = lambda: PhModel(
-                    config=self.config,
-                    dropout=0.0,
-                    n_inputs=len(self.input_labels),
-                    system_phase=system_phase,
-                    means=self._means,
-                    stds=self._stds
-                )
+                model_factory = lambda: self._make_physics_model(system_phase, dropout=0.0)
 
             elif self.model == MLPModel:
                 # MLP model with explicit input/output sizes
@@ -269,6 +412,28 @@ class GDEOptimizer:
 
         return model, stats
 
+    def _apply_configured_physics_seed(self) -> Optional[int]:
+        """Seed Physics and GP+Physics fitting from the driver configuration."""
+        configured_seed = self.config.get("torch_seed")
+        if configured_seed is None:
+            return None
+        if isinstance(configured_seed, bool):
+            raise ValueError("torch_seed must be an integer, not a boolean.")
+        try:
+            seed = int(configured_seed)
+        except (TypeError, ValueError) as error:
+            raise ValueError("torch_seed must be an integer.") from error
+        if isinstance(configured_seed, float) and not configured_seed.is_integer():
+            raise ValueError("torch_seed must be an integer.")
+
+        try:
+            torch.manual_seed(seed)
+        except RuntimeError as error:
+            raise ValueError(f"torch_seed {seed} is outside PyTorch's valid range.") from error
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        return seed
+
     def _get_acquisition_function(
         self, predictor: torch.nn.Module
     ) -> ExpectedImprovement | LogExpectedImprovement | ProbabilityOfImprovement:
@@ -284,6 +449,12 @@ class GDEOptimizer:
         _, y = self._get_data_tensors()
 
         target_idx = self.output_labels.index(self.quantity)
+        posterior_transform = None
+        is_gp_wrapper = isinstance(predictor, BoTorchGP) or hasattr(predictor, "likelihood")
+        if len(self.output_labels) > 1 and is_gp_wrapper:
+            weights = torch.zeros(len(self.output_labels), dtype=torch.float32)
+            weights[target_idx] = 1.0
+            posterior_transform = ScalarizedPosteriorTransform(weights=weights)
 
         if self.config["EI_reference"] == "max":
             best_f = y[:, target_idx].max()
@@ -301,18 +472,21 @@ class GDEOptimizer:
                     predictor,
                     best_f=best_f,
                     maximize=self.maximize,
+                    posterior_transform=posterior_transform,
                 )
         if self.aquisition == "logEI":
             return LogExpectedImprovement(
                 predictor,
                 best_f=best_f,
                 maximize=self.maximize,
+                posterior_transform=posterior_transform,
             )
         if self.aquisition == "PI":
             return ProbabilityOfImprovement(
                 predictor,
                 best_f=best_f,
                 maximize=self.maximize,
+                posterior_transform=posterior_transform,
             )
         if self.aquisition == "UCB":
             beta = self.config.get("UCB_beta", 1.0)
@@ -320,6 +494,7 @@ class GDEOptimizer:
                 predictor,
                 beta=beta,
                 maximize=self.maximize,
+                posterior_transform=posterior_transform,
             )
         raise ValueError(f"Unsupported acquisition function: {self.aquisition}")
 
@@ -348,6 +523,7 @@ class GDEOptimizer:
                 f"  {label}: [{raw_bounds[0, i].item():.4g}, {raw_bounds[1, i].item():.4g}]"
                 for i, label in enumerate(self.input_labels)
             )
+            prediction_example = {label: 0.0 for label in self.output_labels}
             return (
                 f"{history_str}"
                 f"{data_str}"
@@ -356,8 +532,9 @@ class GDEOptimizer:
                 f"in the fewest number of experiments.\n"
                 f"Respond with ONLY a JSON object with:\n"
                 f'  parameter names mapped to their suggested values\n'
+                f'  "predicted_objectives": estimated values for every objective\n'
                 f'  "reason": brief explanation\n'
-                f'Example: {json.dumps({**{l: 0.0 for l in self.input_labels}, "reason": "..."})}'
+                f'Example: {json.dumps({**{l: 0.0 for l in self.input_labels}, "predicted_objectives": prediction_example, "reason": "..."})}'
             )
         else:  # step_within_data
             return (
@@ -373,13 +550,59 @@ class GDEOptimizer:
             )
 
     def _read_response(self, text: str) -> dict:
-        """Strip markdown code fences from LLM output and parse as JSON."""
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        return json.loads(text.strip())
+        """Parse a JSON object even when the provider adds fences or brief prose."""
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("The LLM returned an empty response.")
+
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            if lines and lines[0].strip().lower() in {"```", "```json"}:
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            cleaned = "\n".join(lines).strip()
+
+        try:
+            result = json.loads(cleaned)
+        except json.JSONDecodeError as original_error:
+            decoder = json.JSONDecoder()
+            result = None
+            for position, character in enumerate(cleaned):
+                if character != "{":
+                    continue
+                try:
+                    result, _ = decoder.raw_decode(cleaned[position:])
+                    break
+                except json.JSONDecodeError:
+                    continue
+            if result is None:
+                preview = cleaned[:200].replace("\n", " ")
+                raise ValueError(
+                    f"The LLM response was not valid JSON. Response began with: {preview!r}"
+                ) from original_error
+
+        if not isinstance(result, dict):
+            raise ValueError(
+                f"The LLM must return a JSON object, but returned {type(result).__name__}."
+            )
+        return result
+
+    @staticmethod
+    def _gemini_empty_response_details(response) -> str:
+        """Summarize Gemini metadata without exposing request credentials."""
+        details = []
+        prompt_feedback = getattr(response, "prompt_feedback", None)
+        if prompt_feedback is not None:
+            block_reason = getattr(prompt_feedback, "block_reason", None)
+            if block_reason:
+                details.append(f"prompt block reason: {block_reason}")
+
+        for candidate in getattr(response, "candidates", None) or []:
+            finish_reason = getattr(candidate, "finish_reason", None)
+            if finish_reason:
+                details.append(f"finish reason: {finish_reason}")
+        return "; ".join(dict.fromkeys(details))
 
     def _llm_suggest(
         self,
@@ -398,21 +621,40 @@ class GDEOptimizer:
         """
         api = self.config.get("llm_api", "gemini")
         system = self.config["llm_experiment_context"]
+        user = self._create_prompt(mode, bounds=bounds, possible_data=possible_data)
         if error_message is not None:
-            user = f"Parsing of your previous output failed with error: {error_message}\n\n"
-        else:
-            user = self._create_prompt(mode, bounds=bounds, possible_data=possible_data)
-        
+            user += (
+                "\n\nYour previous response could not be used. Correct this error and "
+                f"answer the original request again: {error_message}"
+            )
+
         api_key = self.config.get("llm_api_key", None)
 
         if api == "gemini":
             from google import genai
+            from google.genai import types
+
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
                 model=self.config["llm_model"],
-                contents=[system, user])
-                    
-            text = response.text
+                contents=user,
+                config=types.GenerateContentConfig(
+                    system_instruction=system,
+                    response_mime_type="application/json",
+                    temperature=0.2,
+                ),
+            )
+            try:
+                text = response.text
+            except (AttributeError, ValueError):
+                text = None
+            if not text or not text.strip():
+                details = self._gemini_empty_response_details(response)
+                suffix = f" ({details})" if details else ""
+                raise ValueError(
+                    "Gemini returned no response text"
+                    f"{suffix}. Check the selected model, safety feedback, quota, and prompt size."
+                )
 
         elif api == "openai":
             from openai import OpenAI
@@ -423,35 +665,57 @@ class GDEOptimizer:
             text = response.choices[0].message.content
 
         elif api == "claude":
-            from anthropic import Anthropic
-            response = Anthropic(api_key=api_key).messages.create(
+            import anthropic
+
+            response = anthropic.Anthropic(api_key=api_key).messages.create(
                 model=self.config["llm_model"],
                 max_tokens=self.config.get("llm_max_tokens", 1024),
                 system=system,
                 messages=self.raw_messages + [{"role": "user", "content": user}],
             )
-            # Claude may return thinking blocks before the final text block.
-            # Do not assume response.content[0] is a TextBlock.
-            text_blocks = [
-                block.text
-                for block in response.content
-                if getattr(block, "type", None) == "text"
-            ]
-            if not text_blocks:
-                raise ValueError("Claude response contained no text block")
-            text = "\n".join(text_blocks)
+            text_parts = []
+            structured_result = None
+            for block in response.content:
+                block_type = getattr(block, "type", None)
+                if block_type == "text":
+                    block_text = getattr(block, "text", None)
+                    if block_text:
+                        text_parts.append(block_text)
+                elif block_type == "tool_use":
+                    block_input = getattr(block, "input", None)
+                    if isinstance(block_input, dict):
+                        structured_result = block_input
+
+            if structured_result is not None:
+                text = json.dumps(structured_result)
+            else:
+                text = "\n".join(text_parts).strip()
+                if not text:
+                    stop_reason = getattr(response, "stop_reason", None)
+                    suffix = f" (stop reason: {stop_reason})" if stop_reason else ""
+                    raise ValueError(
+                        "Claude returned no text or structured JSON"
+                        f"{suffix}. Check the selected model, safety response, quota, and prompt size."
+                    )
 
         else:
             raise ValueError(f"Unsupported llm_api '{api}'. Choose 'gemini', 'openai', or 'claude'.")
 
-        self.raw_messages.extend([{"role": "user",   "content": user}, {"role": "assistant",   "content": text}])
+        self.raw_messages.extend(
+            [
+                {"role": "user", "content": user},
+                {"role": "assistant", "content": text},
+            ]
+        )
 
-        print(f"Raw messages:\n{self.raw_messages}\n")
-        
         return self._read_response(text)
 
     def step(
-        self, new_data: pd.DataFrame, bounds: Optional[torch.Tensor] = None
+        self,
+        new_data: pd.DataFrame,
+        bounds: Optional[torch.Tensor] = None,
+        *,
+        fixed_features: Optional[dict] = None,
     ) -> Tuple[torch.Tensor, pd.Series]:
         """
         Perform a step in the optimization process using the new data and bounds.
@@ -469,6 +733,7 @@ class GDEOptimizer:
             for attempt in range(self.config.get("llm_max_attempts", 3)):
                 try:
                     result = self._llm_suggest("step", bounds=bounds, error_message=error_message)
+                    predicted_objectives = result.pop("predicted_objectives", None)
                     suggestion = {l: result[l] for l in self.input_labels}
 
                 except Exception as e:
@@ -490,6 +755,15 @@ class GDEOptimizer:
                 break
                 
             self.llm_history.append({"step": self.i, "suggestion": suggestion, "reason": reason})
+            if isinstance(predicted_objectives, dict):
+                self.last_prediction_means = {
+                    label: float(predicted_objectives[label])
+                    for label in self.output_labels
+                    if label in predicted_objectives
+                }
+            else:
+                self.last_prediction_means = None
+            self.last_prediction_stds = None
             if reason:
                 print(f"LLM reason: {reason}")
             self.i += 1
@@ -506,21 +780,21 @@ class GDEOptimizer:
             )
         assert raw_bounds.shape[0] == 2, "Bounds should have shape (2, d)"
 
+        domain = None
+        if self.model in {PhModel, MultitaskGPhysModel}:
+            domain = PhysicsDomain(self.input_labels, raw_bounds, self.config, fixed_features)
+        elif fixed_features:
+            raise ValueError("fixed_features is currently supported only for physics models.")
+
         try:
             predictor, stats = self.get_predictor()
-        except torch._C._LinAlgError:
-            print(
-                "LinAlgError during ensemble training. System may be underdetermined. Returning a random candidate."
-            )
-            x_candidate = (
-                torch.randn(len(self.input_labels))
-                * (raw_bounds[1, :] - raw_bounds[0, :])
-                + raw_bounds[0, :]
-            )
-
-            return torch.nan, pd.Series(
-                x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
-            )
+        except torch._C._LinAlgError as error:
+            raise OptimizerTrainingError(
+                "Carbon Driver could not fit the optimization model because the "
+                "training data produced an unstable linear-algebra system. No "
+                "recommendation was generated. Review duplicate conditions, input "
+                "variation, and the amount of training data before retrying."
+            ) from error
         except RuntimeError as e:
             # Handle gpytorch ExactGP runtime error when model is called with inputs
             # that don't exactly match the stored training inputs (raised in debug mode).
@@ -529,18 +803,12 @@ class GDEOptimizer:
                 "You must train on the training inputs" in msg
                 or "train_inputs cannot be None" in msg
             ):
-                print(
-                    "RuntimeError during GP training (likely mismatched training inputs). Treating as underdetermined and returning a random candidate."
-                )
-                x_candidate = (
-                    torch.randn(len(self.input_labels))
-                    * (raw_bounds[1, :] - raw_bounds[0, :])
-                    + raw_bounds[0, :]
-                )
-                return torch.nan, pd.Series(
-                    x_candidate.detach().cpu().numpy().flatten(),
-                    index=self.input_labels,
-                )
+                raise OptimizerTrainingError(
+                    "Carbon Driver could not fit the Gaussian Process because its "
+                    "stored training inputs are inconsistent with the current data. "
+                    "No recommendation was generated. Rebuild the model from the "
+                    "active campaign observations before retrying."
+                ) from e
             else:
                 # Unknown runtime error: re-raise so we don't silently swallow unrelated failures
                 raise
@@ -562,28 +830,24 @@ class GDEOptimizer:
             torch.tensor(self._stds[self.input_labels].values), # Will be 1 if not normalized
         )  # feature-only stats
 
-        bounds_norm = (raw_bounds - means) / stds
+        free_indices = domain.free_indices if domain else list(range(len(self.input_labels)))
+        free_means, free_stds = means[free_indices], stds[free_indices]
+        free_bounds = domain.free_bounds if domain else raw_bounds
+        bounds_norm = (free_bounds - free_means) / free_stds
         
         # print(f"[step] normalized bounds min: {bounds_norm[0].tolist()} max: {bounds_norm[1].tolist()}")
         opt_bounds = bounds_norm.float()
 
+        def full_normalized(x):
+            if domain is None:
+                return x
+            raw = x * free_stds.to(x) + free_means.to(x)
+            return (domain.expand(raw) - means.to(x)) / stds.to(x)
+
         def AF_q(x):
-            vals = AF(x)
-            # vals can be:
-            #  - 1D: (batch,) already scalar per point
-            #  - 2D: (batch, m) for m outputs
-            if vals.dim() == 1:
-                return vals
-            if vals.dim() == 2:
-                if vals.size(1) == 1:
-                    return vals.squeeze(1)
-                if target_idx >= vals.size(1):
-                    raise RuntimeError(
-                        f"Acquisition returned {vals.size(1)} outputs but target_idx={target_idx}"
-                    )
-                return vals[:, target_idx]
-            # Fallback: flatten all but batch dim and take first column
-            return vals.view(vals.shape[0], -1)[:, 0]
+            vals = AF(full_normalized(x))
+            count = x.shape[0] if x.ndim >= 3 else 1
+            return _candidate_scores(vals, target_idx, count)
 
         next_experiment, _ = optimize_acqf(
             acq_function=AF_q,
@@ -595,7 +859,40 @@ class GDEOptimizer:
         )
         
         # Denormalize the candidate, mean=0 and std=1 if not normalized. 
-        x_candidate = next_experiment * stds + means
+        full_candidate = full_normalized(next_experiment)
+        x_candidate = (
+            domain.expand(next_experiment * free_stds + free_means)
+            if domain else full_candidate * stds + means
+        )
+
+        try:
+            with torch.no_grad():
+                posterior = predictor.posterior(full_candidate)
+                posterior_mean = posterior.mean
+                posterior_std = posterior.variance.clamp_min(0).sqrt()
+            prediction_values = posterior_mean.detach().cpu().reshape(-1).tolist()
+            uncertainty_values = posterior_std.detach().cpu().reshape(-1).tolist()
+            if len(prediction_values) < len(self.output_labels):
+                raise ValueError("Predictor returned fewer values than configured outputs.")
+
+            output_means = self._means[self.output_labels].to_numpy(dtype=float)
+            output_stds = self._stds[self.output_labels].to_numpy(dtype=float)
+            prediction_values = np.asarray(
+                prediction_values[-len(self.output_labels):], dtype=float
+            )
+            prediction_values = prediction_values * output_stds + output_means
+            uncertainty_values = np.asarray(
+                uncertainty_values[-len(self.output_labels):], dtype=float
+            ) * output_stds
+            self.last_prediction_means = dict(
+                zip(self.output_labels, prediction_values.tolist())
+            )
+            self.last_prediction_stds = dict(
+                zip(self.output_labels, uncertainty_values.tolist())
+            )
+        except (AttributeError, RuntimeError, ValueError):
+            self.last_prediction_means = None
+            self.last_prediction_stds = None
 
         self.i += 1
 
@@ -603,6 +900,20 @@ class GDEOptimizer:
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="Output shape checks failed!")
             ei_val = AF_q(next_experiment)
+
+        def evaluate_raw(free_raw):
+            normalized = (free_raw - free_means.to(free_raw)) / free_stds.to(free_raw)
+            return AF_q(normalized.float())
+
+        # Kept in memory only: callers may generate slices without refitting the model.
+        self.acquisition_context = {
+            "evaluate": evaluate_raw,
+            "labels": domain.free_labels if domain else list(self.input_labels),
+            "bounds": free_bounds.detach().cpu(),
+            "reference": (next_experiment * free_stds + free_means).detach().cpu().reshape(-1),
+            "constraints": domain.metadata() if domain else {},
+            "acquisition": self.aquisition,
+        }
 
         return ei_val, pd.Series(
             x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
@@ -622,7 +933,10 @@ class GDEOptimizer:
         :param return_metrics: whether to return training metrics (nll, loss)
         :returns: (best_ei_value, best_index) or (best_ei_value, best_index, metrics) if return_metrics=True
         """
-        
+
+        if possible_data.empty:
+            raise ValueError("possible_data must contain at least one candidate.")
+
         self.update_data(new_data)
 
         if any([(label in possible_data.columns) for label in self.output_labels]):
@@ -670,11 +984,13 @@ class GDEOptimizer:
 
         try:
             predictor, stats = self.get_predictor()
-        except torch._C._LinAlgError:
-            print(
-                "LinAlgError during ensemble training. System may be underdetermined."
-            )
-            return torch.nan, torch.randint(len(possible_data) - 1, (1,)).squeeze(), {}
+        except torch._C._LinAlgError as error:
+            raise OptimizerTrainingError(
+                "Carbon Driver could not fit the optimization model because the "
+                "training data produced an unstable linear-algebra system. No "
+                "candidate was selected. Review duplicate conditions, input "
+                "variation, and the amount of training data before retrying."
+            ) from error
         except RuntimeError as e:
             msg = str(e)
             if (
@@ -682,18 +998,11 @@ class GDEOptimizer:
                 or "train_inputs cannot be None" in msg
                 or "cholesky_cpu" in msg
             ):
-                print("RuntimeError during GP training. Treating as underdetermined.")
-                if return_metrics:
-                    return (
-                        torch.nan,
-                        torch.randint(len(possible_data) - 1, (1,)).squeeze(),
-                        {},
-                    )
-                else:
-                    return (
-                        torch.nan,
-                        torch.randint(len(possible_data) - 1, (1,)).squeeze()
-                    )
+                raise OptimizerTrainingError(
+                    "Carbon Driver could not fit the Gaussian Process for candidate "
+                    "selection. No candidate was selected. Review the active training "
+                    "data and rebuild the model before retrying."
+                ) from e
             else:
                 raise
 
@@ -705,25 +1014,18 @@ class GDEOptimizer:
             warnings.filterwarnings("ignore", message="Output shape checks failed!")
             scores = AF(X.unsqueeze(1))
 
-        if isinstance(scores, torch.Tensor) and scores.dim() == 1:
-            scores = scores.unsqueeze(0)
-
         self.i += 1
 
         target_idx = self.output_labels.index(self.quantity)
-
-        if isinstance(scores, torch.Tensor):
-            if scores.shape[1] <= target_idx:
-                raise RuntimeError(
-                    f"AF scores shape {tuple(scores.shape)} has no column {target_idx}"
-                )
-            target_scores = scores[:, target_idx]
-        else:
-            raise RuntimeError("AF returned non-tensor scores, expected torch.Tensor")
+        target_scores = _candidate_scores(
+            scores,
+            target_idx=target_idx,
+            num_candidates=len(possible_data),
+        )
         print(f"Target scores : {target_scores.tolist()}")
-        best_idx = int(target_scores.argmax().item())
-        best_df_index = possible_data.iloc[best_idx].name
-        best_ei = float(target_scores[best_idx].item())
+        best_position = int(target_scores.argmax().item())
+        best_df_index = possible_data.iloc[best_position].name
+        best_ei = float(target_scores[best_position].item())
 
         # Extract final training metrics from stats
         metrics = {}

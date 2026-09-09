@@ -9,6 +9,14 @@ import os
 
 Ag_DENSITY = 10490  # kg/m^3
 Cu_DENSITY = 8935  # kg/m^3
+DEFAULT_ELECTRODE_AREA_CM2 = 1.85**2
+
+
+def _validate_electrode_area(electrode_area_cm2: float) -> float:
+    area = float(electrode_area_cm2)
+    if not np.isfinite(area) or area <= 0:
+        raise ValueError("electrode_area_cm2 must be positive and finite")
+    return area
 
 # Load results from folder
 def load_results_from_folder(
@@ -42,10 +50,14 @@ def load_results_from_folder(
     return df_res_train, df_res_val
 
 
-def load_gas_data(file: Optional[Path] = None) -> pd.DataFrame:
+def load_gas_data(
+    file: Optional[Path] = None,
+    electrode_area_cm2: float = DEFAULT_ELECTRODE_AREA_CM2,
+) -> pd.DataFrame:
     """Load experimental data from Excel and compute electrode thickness.
 
     :param file: path to Excel file (default: ./data/gas.xlsx)
+    :param electrode_area_cm2: active electrode area used for thickness and current density
     :returns:
         DataFrame with features and experimental Faradaic efficiencies
         current_density
@@ -74,7 +86,7 @@ def load_gas_data(file: Optional[Path] = None) -> pd.DataFrame:
 
     dens_avg = (1 - df["AgCu Ratio"]) * Cu_DENSITY + df["AgCu Ratio"] * Ag_DENSITY
     mass = df["Catalyst mass loading"] * 1e-6  # kg
-    area = 1.85**2  # cm^2
+    area = _validate_electrode_area(electrode_area_cm2)
     A = area * 1e-4  # m^2
     thickness = (mass / dens_avg) / A  # m
     df.insert(3, column="zero_eps_thickness", value=thickness)
@@ -86,7 +98,10 @@ def load_gas_data(file: Optional[Path] = None) -> pd.DataFrame:
     
     return df.astype(float), current_density
 
-def load_bicarb_data(filepath: Optional[Path] = None) -> pd.DataFrame:
+def load_bicarb_data(
+    filepath: Optional[Path] = None,
+    electrode_area_cm2: float = DEFAULT_ELECTRODE_AREA_CM2,
+) -> pd.DataFrame:
     """
     Reads the Bicarb CSV and melts the multiple result columns into new entries.
     """
@@ -105,7 +120,7 @@ def load_bicarb_data(filepath: Optional[Path] = None) -> pd.DataFrame:
     df["CO2 utilization"] = df["CO2 utilization"] / 100
 
     mass = df["Ag weight"] * 1e-6  # kg
-    area = 1.85**2  # cm^2
+    area = _validate_electrode_area(electrode_area_cm2)
     A = area * 1e-4  # m^2
     thickness = (mass / Ag_DENSITY) / A  # m
     df.insert(1, column="zero_eps_thickness", value=thickness)
