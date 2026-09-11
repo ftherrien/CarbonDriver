@@ -16,6 +16,7 @@ default_config = {
     "current_density": None,
     "zero_eps_thickness": None,
     "t_CO2": None,
+    "propose_random_when_underdetermined": True,
     # LLM-based active learning settings (used when model_name="LLM")
     "llm_api": "gemini",          # "gemini", "openai", or "claude"
     "llm_model": "gemini-3.5-flash",

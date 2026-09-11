@@ -450,6 +450,28 @@ class GDEOptimizer:
         
         return self._read_response(text)
 
+    def _check_underdetermined_fallback(self, error: Exception) -> None:
+        """Raise if the random-candidate fallback is disabled, else print a notice."""
+        if not self.config.get("propose_random_when_underdetermined", True):
+            raise RuntimeError(
+                "Carbon Driver could not fit the optimization model; the training "
+                "data may be underdetermined (duplicate conditions, too little "
+                "variation, or too few observations). No recommendation was "
+                "generated. Set config['propose_random_when_underdetermined'] = "
+                "True to fall back to a random candidate instead."
+            ) from error
+        print(f"System may be underdetermined ({error}). Returning a random candidate.")
+
+    def _random_candidate(self, raw_bounds: torch.Tensor) -> pd.Series:
+        x_candidate = (
+            torch.randn(len(self.input_labels))
+            * (raw_bounds[1, :] - raw_bounds[0, :])
+            + raw_bounds[0, :]
+        )
+        return pd.Series(
+            x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
+        )
+
     def step(
         self, new_data: pd.DataFrame, bounds: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, pd.Series]:
@@ -508,19 +530,9 @@ class GDEOptimizer:
 
         try:
             predictor, stats = self.get_predictor()
-        except torch._C._LinAlgError:
-            print(
-                "LinAlgError during ensemble training. System may be underdetermined. Returning a random candidate."
-            )
-            x_candidate = (
-                torch.randn(len(self.input_labels))
-                * (raw_bounds[1, :] - raw_bounds[0, :])
-                + raw_bounds[0, :]
-            )
-
-            return torch.nan, pd.Series(
-                x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
-            )
+        except torch._C._LinAlgError as error:
+            self._check_underdetermined_fallback(error)
+            return torch.nan, self._random_candidate(raw_bounds)
         except RuntimeError as e:
             # Handle gpytorch ExactGP runtime error when model is called with inputs
             # that don't exactly match the stored training inputs (raised in debug mode).
@@ -529,18 +541,8 @@ class GDEOptimizer:
                 "You must train on the training inputs" in msg
                 or "train_inputs cannot be None" in msg
             ):
-                print(
-                    "RuntimeError during GP training (likely mismatched training inputs). Treating as underdetermined and returning a random candidate."
-                )
-                x_candidate = (
-                    torch.randn(len(self.input_labels))
-                    * (raw_bounds[1, :] - raw_bounds[0, :])
-                    + raw_bounds[0, :]
-                )
-                return torch.nan, pd.Series(
-                    x_candidate.detach().cpu().numpy().flatten(),
-                    index=self.input_labels,
-                )
+                self._check_underdetermined_fallback(e)
+                return torch.nan, self._random_candidate(raw_bounds)
             else:
                 # Unknown runtime error: re-raise so we don't silently swallow unrelated failures
                 raise
@@ -673,11 +675,10 @@ class GDEOptimizer:
 
         try:
             predictor, stats = self.get_predictor()
-        except torch._C._LinAlgError:
-            print(
-                "LinAlgError during ensemble training. System may be underdetermined."
-            )
-            return torch.nan, torch.randint(len(possible_data) - 1, (1,)).squeeze(), {}
+        except torch._C._LinAlgError as error:
+            self._check_underdetermined_fallback(error)
+            random_idx = torch.randint(len(possible_data) - 1, (1,)).squeeze()
+            return (torch.nan, random_idx, {}) if return_metrics else (torch.nan, random_idx)
         except RuntimeError as e:
             msg = str(e)
             if (
@@ -685,18 +686,9 @@ class GDEOptimizer:
                 or "train_inputs cannot be None" in msg
                 or "cholesky_cpu" in msg
             ):
-                print("RuntimeError during GP training. Treating as underdetermined.")
-                if return_metrics:
-                    return (
-                        torch.nan,
-                        torch.randint(len(possible_data) - 1, (1,)).squeeze(),
-                        {},
-                    )
-                else:
-                    return (
-                        torch.nan,
-                        torch.randint(len(possible_data) - 1, (1,)).squeeze()
-                    )
+                self._check_underdetermined_fallback(e)
+                random_idx = torch.randint(len(possible_data) - 1, (1,)).squeeze()
+                return (torch.nan, random_idx, {}) if return_metrics else (torch.nan, random_idx)
             else:
                 raise
 
