@@ -7,13 +7,35 @@ import torch
 import numpy as np
 import os, json
 from typing import Tuple, Optional
+from botorch import fit_gpytorch_mll
 from botorch.acquisition.analytic import LogExpectedImprovement, ExpectedImprovement, ProbabilityOfImprovement, UpperConfidenceBound
+from botorch.models.gp_regression import SingleTaskGP
 from botorch.optim import optimize_acqf
 from botorch.acquisition.objective import ScalarizedPosteriorTransform
 import warnings
 import gpytorch
 
 SUPPORTED_AFs = ["EI", "logEI", "PI", "UCB"]
+
+
+def _canonical_label(label: str) -> str:
+    return "".join(ch for ch in str(label).lower() if ch.isalnum())
+
+
+class PhysicsOutputAdapter(torch.nn.Module):
+    """Select requested physics-model output columns."""
+
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        output_indices: list[int],
+    ) -> None:
+        super().__init__()
+        self.model = model
+        self.output_indices = output_indices
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)[..., self.output_indices]
 
 
 class GDEOptimizer:
@@ -110,6 +132,44 @@ class GDEOptimizer:
         self._means = pd.Series(0.0, self.input_labels + self.output_labels)
         self._stds = pd.Series(1.0, self.input_labels + self.output_labels)
 
+    def _physical_output_indices(self) -> list[int]:
+        physical_outputs = (
+            ["FE_CO", "CO2 utilization"]
+            if self.config.get("dataset") == "bicarb"
+            else ["FE (Eth)", "FE (CO)"]
+        )
+        available = {
+            _canonical_label(label): index
+            for index, label in enumerate(physical_outputs)
+        }
+        missing = [
+            label
+            for label in self.output_labels
+            if _canonical_label(label) not in available
+        ]
+        if missing:
+            raise ValueError(
+                "Physics-based Carbon Driver models can only predict "
+                f"{physical_outputs}. Requested unsupported objective(s): {missing}."
+            )
+        return [available[_canonical_label(label)] for label in self.output_labels]
+
+    def _make_physics_model(
+        self, system_phase: str, dropout: float = 0.1
+    ) -> torch.nn.Module:
+        model = PhModel(
+            config=self.config,
+            dropout=dropout,
+            n_inputs=len(self.input_labels),
+            system_phase=system_phase,
+            means=self._means,
+            stds=self._stds,
+        )
+        output_indices = self._physical_output_indices()
+        if output_indices == list(range(2)):
+            return model
+        return PhysicsOutputAdapter(model, output_indices)
+
     def _get_data_tensors(
         self, data: Optional[pd.DataFrame] = None, update_stats: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -202,6 +262,17 @@ class GDEOptimizer:
         # Special handling for GP and GP+Ph models: these use gpytorch training functions
         # (they are not compatible with the ensemble training pipeline used for MLP/Ph).
         if self.model == MultitaskGPModel:
+            if len(self.output_labels) == 1:
+                model = SingleTaskGP(X.double(), y.double())
+                mll = gpytorch.mlls.ExactMarginalLogLikelihood(
+                    model.likelihood, model
+                )
+                fit_gpytorch_mll(mll)
+                stats = pd.DataFrame(
+                    {"loss": [np.nan], "val_loss": [np.nan], "nll": [np.nan]},
+                    index=pd.Index([0], name="step"),
+                )
+                return model, stats
 
             # Train GP and return BoTorch-compatible model
             stats, _, model, likelihood = train_GP_model(
@@ -216,13 +287,7 @@ class GDEOptimizer:
         elif self.model == MultitaskGPhysModel:
             # GP+Physics: Ph model constructor must be provided to the GP+Ph trainer.
 
-            ph_model_constructor = lambda: PhModel(
-                config=self.config,
-                n_inputs=len(self.input_labels),
-                system_phase=system_phase,
-                means=self._means,
-                stds=self._stds
-            )
+            ph_model_constructor = lambda: self._make_physics_model(system_phase)
 
             # Train GP+Ph and return BoTorch-compatible model
             stats, _, model, likelihood = train_GP_Ph_model(
@@ -239,13 +304,8 @@ class GDEOptimizer:
         else:
             if self.model == PhModel:
 
-                model_factory = lambda: PhModel(
-                    config=self.config,
-                    dropout=0.0,
-                    n_inputs=len(self.input_labels),
-                    system_phase=system_phase,
-                    means=self._means,
-                    stds=self._stds
+                model_factory = lambda: self._make_physics_model(
+                    system_phase, dropout=0.0
                 )
 
             elif self.model == MLPModel:

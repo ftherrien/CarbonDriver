@@ -283,13 +283,14 @@ class MultitaskGPModel(gpytorch.models.ExactGP):
         :param likelihood: GPyTorch likelihood
         """
         super(MultitaskGPModel, self).__init__(train_x, train_y, likelihood)
+        num_tasks = train_y.shape[-1] if train_y.ndim > 1 else 1
         self.mean_module = gpytorch.means.MultitaskMean(
-            gpytorch.means.ConstantMean(), num_tasks=2
+            gpytorch.means.ConstantMean(), num_tasks=num_tasks
         )
         self.covar_module = gpytorch.kernels.MultitaskKernel(
-            gpytorch.kernels.RBFKernel(), num_tasks=2, rank=1
+            gpytorch.kernels.RBFKernel(), num_tasks=num_tasks, rank=1
         )
-        self.num_outputs = 2
+        self.num_outputs = num_tasks
 
     def forward(
         self, x: torch.Tensor
@@ -338,9 +339,9 @@ class MyMean(gpytorch.means.Mean):
         Evaluate mean function.
 
         :param x: input tensor
-        :returns: mean function output squeezed to 1D
+        :returns: mean function output with one column per physics objective
         """
-        return self.model(x).squeeze()
+        return self.model(x)
 
 
 class MultitaskGPhysModel(gpytorch.models.ExactGP):
@@ -363,8 +364,9 @@ class MultitaskGPhysModel(gpytorch.models.ExactGP):
         """
         super(MultitaskGPhysModel, self).__init__(train_x, train_y, likelihood)
         self.mean_module = MyMean(model=model, freeze_model=freeze_model)
+        num_tasks = train_y.shape[-1] if train_y.ndim > 1 else 1
         self.covar_module = gpytorch.kernels.MultitaskKernel(
-            gpytorch.kernels.RBFKernel(), num_tasks=2, rank=1
+            gpytorch.kernels.RBFKernel(), num_tasks=num_tasks, rank=1
         )
 
     def forward(
