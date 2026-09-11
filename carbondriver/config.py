@@ -16,6 +16,9 @@ default_config = {
     "current_density": None,
     "zero_eps_thickness": None,
     "t_CO2": None,
+    # Keep historical random exploration after model-fit failures by default.
+    # Applications that must stop instead can set this to "raise".
+    "model_failure_policy": "random",
     # LLM-based active learning settings (used when model_name="LLM")
     "llm_api": "gemini",          # "gemini", "openai", or "claude"
     "llm_model": "gemini-3.5-flash",

@@ -14,6 +14,11 @@ import warnings
 import gpytorch
 
 SUPPORTED_AFs = ["EI", "logEI", "PI", "UCB"]
+SUPPORTED_MODEL_FAILURE_POLICIES = ["random", "raise"]
+
+
+class OptimizerTrainingError(RuntimeError):
+    """Raised when fitting fails and the configured policy is to stop."""
 
 
 class GDEOptimizer:
@@ -76,6 +81,12 @@ class GDEOptimizer:
         self.output_dir = output_dir
 
         self.config = default_config | config
+        failure_policy = self.config["model_failure_policy"]
+        if failure_policy not in SUPPORTED_MODEL_FAILURE_POLICIES:
+            raise ValueError(
+                "model_failure_policy must be one of "
+                f"{SUPPORTED_MODEL_FAILURE_POLICIES}, received {failure_policy!r}."
+            )
         dataset = self.config.get("dataset", "gas")
 
         self.maximize = maximize
@@ -109,6 +120,19 @@ class GDEOptimizer:
         # Stats for normalization of feature columns (set in get_predictor when normalize=True)
         self._means = pd.Series(0.0, self.input_labels + self.output_labels)
         self._stds = pd.Series(1.0, self.input_labels + self.output_labels)
+
+    def _handle_model_failure(self, error: Exception, action: str) -> None:
+        message = (
+            "Carbon Driver could not fit the optimization model. "
+            f"No {action} was produced by the fitted model."
+        )
+        if self.config["model_failure_policy"] == "raise":
+            raise OptimizerTrainingError(message) from error
+        warnings.warn(
+            f"{message} Falling back to random exploration.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     def _get_data_tensors(
         self, data: Optional[pd.DataFrame] = None, update_stats: bool = False
@@ -508,16 +532,17 @@ class GDEOptimizer:
 
         try:
             predictor, stats = self.get_predictor()
-        except torch._C._LinAlgError:
-            print(
-                "LinAlgError during ensemble training. System may be underdetermined. Returning a random candidate."
-            )
+        except torch._C._LinAlgError as error:
+            self._handle_model_failure(error, "recommendation")
             x_candidate = (
-                torch.randn(len(self.input_labels))
+                torch.rand(
+                    len(self.input_labels),
+                    dtype=raw_bounds.dtype,
+                    device=raw_bounds.device,
+                )
                 * (raw_bounds[1, :] - raw_bounds[0, :])
                 + raw_bounds[0, :]
             )
-
             return torch.nan, pd.Series(
                 x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
             )
@@ -529,11 +554,13 @@ class GDEOptimizer:
                 "You must train on the training inputs" in msg
                 or "train_inputs cannot be None" in msg
             ):
-                print(
-                    "RuntimeError during GP training (likely mismatched training inputs). Treating as underdetermined and returning a random candidate."
-                )
+                self._handle_model_failure(e, "recommendation")
                 x_candidate = (
-                    torch.randn(len(self.input_labels))
+                    torch.rand(
+                        len(self.input_labels),
+                        dtype=raw_bounds.dtype,
+                        device=raw_bounds.device,
+                    )
                     * (raw_bounds[1, :] - raw_bounds[0, :])
                     + raw_bounds[0, :]
                 )
@@ -622,7 +649,10 @@ class GDEOptimizer:
         :param return_metrics: whether to return training metrics (nll, loss)
         :returns: (best_ei_value, best_index) or (best_ei_value, best_index, metrics) if return_metrics=True
         """
-        
+
+        if possible_data.empty:
+            raise ValueError("possible_data must contain at least one candidate.")
+
         self.update_data(new_data)
 
         if any([(label in possible_data.columns) for label in self.output_labels]):
@@ -670,11 +700,13 @@ class GDEOptimizer:
 
         try:
             predictor, stats = self.get_predictor()
-        except torch._C._LinAlgError:
-            print(
-                "LinAlgError during ensemble training. System may be underdetermined."
-            )
-            return torch.nan, torch.randint(len(possible_data) - 1, (1,)).squeeze(), {}
+        except torch._C._LinAlgError as error:
+            self._handle_model_failure(error, "candidate selection")
+            random_position = int(torch.randint(len(possible_data), (1,)).item())
+            random_index = possible_data.iloc[random_position].name
+            if return_metrics:
+                return torch.nan, random_index, {}
+            return torch.nan, random_index
         except RuntimeError as e:
             msg = str(e)
             if (
@@ -682,18 +714,12 @@ class GDEOptimizer:
                 or "train_inputs cannot be None" in msg
                 or "cholesky_cpu" in msg
             ):
-                print("RuntimeError during GP training. Treating as underdetermined.")
+                self._handle_model_failure(e, "candidate selection")
+                random_position = int(torch.randint(len(possible_data), (1,)).item())
+                random_index = possible_data.iloc[random_position].name
                 if return_metrics:
-                    return (
-                        torch.nan,
-                        torch.randint(len(possible_data) - 1, (1,)).squeeze(),
-                        {},
-                    )
-                else:
-                    return (
-                        torch.nan,
-                        torch.randint(len(possible_data) - 1, (1,)).squeeze()
-                    )
+                    return torch.nan, random_index, {}
+                return torch.nan, random_index
             else:
                 raise
 
