@@ -16,6 +16,30 @@ import gpytorch
 SUPPORTED_AFs = ["EI", "logEI", "PI", "UCB"]
 
 
+def _candidate_scores(
+    scores: torch.Tensor, target_idx: int, num_candidates: int
+) -> torch.Tensor:
+    """Return one acquisition score for each candidate row."""
+    if not isinstance(scores, torch.Tensor):
+        raise RuntimeError("AF returned non-tensor scores, expected torch.Tensor")
+    if scores.ndim == 1:
+        if scores.shape[0] != num_candidates:
+            raise RuntimeError(
+                f"AF scores shape {tuple(scores.shape)} does not match "
+                f"{num_candidates} candidates"
+            )
+        return scores
+    if scores.ndim == 2 and scores.shape[0] == num_candidates:
+        if scores.shape[1] == 1:
+            return scores[:, 0]
+        if 0 <= target_idx < scores.shape[1]:
+            return scores[:, target_idx]
+    raise RuntimeError(
+        f"AF scores must have shape (N,) or (N, M) with N={num_candidates}; "
+        f"received {tuple(scores.shape)}"
+    )
+
+
 class GDEOptimizer:
     """
     Class to optimize gas diffusion electrodes experimental parameters based with Bayesian optimization using various models.
@@ -705,25 +729,18 @@ class GDEOptimizer:
             warnings.filterwarnings("ignore", message="Output shape checks failed!")
             scores = AF(X.unsqueeze(1))
 
-        if isinstance(scores, torch.Tensor) and scores.dim() == 1:
-            scores = scores.unsqueeze(0)
-
         self.i += 1
 
         target_idx = self.output_labels.index(self.quantity)
-
-        if isinstance(scores, torch.Tensor):
-            if scores.shape[1] <= target_idx:
-                raise RuntimeError(
-                    f"AF scores shape {tuple(scores.shape)} has no column {target_idx}"
-                )
-            target_scores = scores[:, target_idx]
-        else:
-            raise RuntimeError("AF returned non-tensor scores, expected torch.Tensor")
+        target_scores = _candidate_scores(
+            scores,
+            target_idx=target_idx,
+            num_candidates=len(possible_data),
+        )
         print(f"Target scores : {target_scores.tolist()}")
-        best_idx = int(target_scores.argmax().item())
-        best_df_index = possible_data.iloc[best_idx].name
-        best_ei = float(target_scores[best_idx].item())
+        best_position = int(target_scores.argmax().item())
+        best_df_index = possible_data.iloc[best_position].name
+        best_ei = float(target_scores[best_position].item())
 
         # Extract final training metrics from stats
         metrics = {}
