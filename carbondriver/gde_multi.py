@@ -5,7 +5,6 @@ from functools import cached_property
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 import scipy.optimize as opt
 import torch
 import torch.nn.functional

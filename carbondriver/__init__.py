@@ -145,8 +145,8 @@ class GDEOptimizer:
 
         df_clean = (df_clean - self._means) / self._stds
 
-        X = torch.tensor(df_clean.loc[:, self.input_labels].values, dtype=torch.float32)
-        y = torch.tensor(df_clean.loc[:, output_labels].values, dtype=torch.float32)
+        X = torch.tensor(df_clean.loc[:, self.input_labels].to_numpy().copy(), dtype=torch.float32)
+        y = torch.tensor(df_clean.loc[:, output_labels].to_numpy().copy(), dtype=torch.float32)
 
         return X, y
 
@@ -558,8 +558,8 @@ class GDEOptimizer:
         # print(f"[step] optimizing target column index (target_idx): {target_idx} for quantity '{self.quantity}'")
 
         means, stds = (
-            torch.tensor(self._means[self.input_labels].values), # Will be 0 if not normalized
-            torch.tensor(self._stds[self.input_labels].values), # Will be 1 if not normalized
+            torch.tensor(self._means[self.input_labels].to_numpy().copy()), # Will be 0 if not normalized
+            torch.tensor(self._stds[self.input_labels].to_numpy().copy()), # Will be 1 if not normalized
         )  # feature-only stats
 
         bounds_norm = (raw_bounds - means) / stds
