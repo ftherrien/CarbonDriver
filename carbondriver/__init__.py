@@ -570,8 +570,11 @@ class GDEOptimizer:
         def AF_q(x):
             vals = AF(x)
             # vals can be:
+            #  - 0D: single-candidate, single-output acquisition value
             #  - 1D: (batch,) already scalar per point
             #  - 2D: (batch, m) for m outputs
+            if vals.dim() == 0:
+                return vals.reshape(1)
             if vals.dim() == 1:
                 return vals
             if vals.dim() == 2:
@@ -705,7 +708,7 @@ class GDEOptimizer:
             warnings.filterwarnings("ignore", message="Output shape checks failed!")
             scores = AF(X.unsqueeze(1))
 
-        if isinstance(scores, torch.Tensor) and scores.dim() == 1:
+        if isinstance(scores, torch.Tensor) and scores.dim() == 1 and scores.shape[0] != len(possible_data):
             scores = scores.unsqueeze(0)
 
         self.i += 1
@@ -713,11 +716,14 @@ class GDEOptimizer:
         target_idx = self.output_labels.index(self.quantity)
 
         if isinstance(scores, torch.Tensor):
-            if scores.shape[1] <= target_idx:
-                raise RuntimeError(
-                    f"AF scores shape {tuple(scores.shape)} has no column {target_idx}"
-                )
-            target_scores = scores[:, target_idx]
+            if scores.dim() == 1:
+                target_scores = scores  # already one score per candidate
+            else:
+                if scores.shape[1] <= target_idx:
+                    raise RuntimeError(
+                        f"AF scores shape {tuple(scores.shape)} has no column {target_idx}"
+                    )
+                target_scores = scores[:, target_idx]
         else:
             raise RuntimeError("AF returned non-tensor scores, expected torch.Tensor")
         print(f"Target scores : {target_scores.tolist()}")

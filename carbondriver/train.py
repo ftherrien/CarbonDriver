@@ -255,7 +255,8 @@ def train_GP_model(
         ax[1].axline((0, 0), slope=1, c="k", ls="--")
         ax[2].axline((0, 0), slope=1, c="k", ls="--")
 
-    likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=2)
+    num_tasks = y_train.shape[-1] if y_train.ndim > 1 else 1
+    likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=num_tasks)
     model = MultitaskGPModel(X_train, y_train, likelihood)
     # Use the adam optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=0.1)
