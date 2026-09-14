@@ -413,13 +413,9 @@ class GDEOptimizer:
         api_key = self.config.get("llm_api_key", None)
 
         if api == "gemini":
-            from google import genai
-            client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(
-                model=self.config["llm_model"],
-                contents=[system, user])
-                    
-            text = response.text
+            raise NotImplementedError(
+                "The 'gemini' llm_api is not currently supported (rate-limited/unavailable); use 'openai' or 'claude' instead."
+            )
 
         elif api == "openai":
             from openai import OpenAI
