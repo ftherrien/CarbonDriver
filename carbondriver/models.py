@@ -43,7 +43,9 @@ class PhModel(torch.nn.Module):
         :param dropout: dropout probability
         :param ldim: hidden layer dimension
         :param n_inputs: number of input features
-        :param config: configuration dict that can include fixed values for 'zero_eps_thickness', 'current_density', and 't_CO2'
+        :param config: configuration dict that can include fixed values for 'zero_eps_thickness', 'current_density', and 't_CO2'.
+            'zero_eps_thickness' can also be set to the string "latent" to have the network predict it directly
+            (sigmoid-scaled to config['zero_eps_thickness_bounds'] = [min, max]) instead of reading it from the inputs.
         :param system_phase: phase of the electrochemical system ('gas' or 'liquid')
         :param means: pandas Series of feature means for denormalization (index should match the order of the input features)
         :param stds: pandas Series of feature stds for denormalization (index should match the order of the input features)
@@ -66,8 +68,14 @@ class PhModel(torch.nn.Module):
         self.stds = stds
 
         self.fixed_value = {}
+        self.zlt_latent = config is not None and config.get("zero_eps_thickness") == "latent"
         for feature in SPECIAL_FEATURES:
-            if config is not None and config.get(feature, None) is not None:
+            if feature == "zero_eps_thickness" and self.zlt_latent:
+                self.zlt_bounds = config["zero_eps_thickness_bounds"]
+                self.fixed_value[feature] = None
+                self.zlt_latent_idx = n_latents
+                n_latents += 1
+            elif config is not None and config.get(feature, None) is not None:
                 self.fixed_value[feature] = float(config[feature])
             else:
                 self.fixed_value[feature] = None
@@ -77,7 +85,7 @@ class PhModel(torch.nn.Module):
                     raise ValueError(f"Feature {feature} must have the same index in means and stds.")
             
         self.net = torch.nn.Sequential(
-            torch.nn.Linear(n_inputs-2, ldim),
+            torch.nn.Linear(n_inputs, ldim),
             torch.nn.ReLU(),
             torch.nn.Dropout(dropout),
             torch.nn.Linear(ldim, ldim),
@@ -126,12 +134,13 @@ class PhModel(torch.nn.Module):
             )
         # increment and print persistent forward counter
         self._forward_counter += 1
-        # columns of x: AgCu Ratio, Naf vol (ul), Sust vol (ul), Zero_eps_thickness, Catalyst mass loading
-        latents = self.net(x[...,:-2])
+        latents = self.net(x)
         r = 40e-9 * torch.exp(latents[..., [0]])
         eps = torch.sigmoid(latents[..., [1]])
 
-        if self.fixed_value["zero_eps_thickness"] is not None:
+        if self.zlt_latent:
+            zlt = self.zlt_bounds[0] + torch.sigmoid(latents[..., [self.zlt_latent_idx]]) * (self.zlt_bounds[1] - self.zlt_bounds[0])
+        elif self.fixed_value["zero_eps_thickness"] is not None:
             zlt = self.fixed_value["zero_eps_thickness"]
         else:
             zlt = x[..., self.means.index.get_loc("zero_eps_thickness")].unsqueeze(-1)*self.stds["zero_eps_thickness"] + self.means["zero_eps_thickness"]
