@@ -88,6 +88,8 @@ class GDEOptimizer:
 
         self.llm_history = []  # list of {"step": i, "suggestion": ..., "reason": ...}
 
+        self.predictor = None  # cached by step()/step_within_data(): the model fit used for the last recommendation
+
         self._bounds = bounds
 
         if input_labels is None:
@@ -472,6 +474,45 @@ class GDEOptimizer:
             x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
         )
 
+    def _select_acquisition_target(self, vals: torch.Tensor, target_idx: int) -> torch.Tensor:
+        # vals can be:
+        #  - 0D: single-candidate, single-output acquisition value
+        #  - 1D: (batch,) already scalar per point
+        #  - 2D: (batch, m) for m outputs
+        if vals.dim() == 0:
+            return vals.reshape(1)
+        if vals.dim() == 1:
+            return vals
+        if vals.dim() == 2:
+            if vals.size(1) == 1:
+                return vals.squeeze(1)
+            if target_idx >= vals.size(1):
+                raise RuntimeError(
+                    f"Acquisition returned {vals.size(1)} outputs but target_idx={target_idx}"
+                )
+            return vals[:, target_idx]
+        # Fallback: flatten all but batch dim and take first column
+        return vals.view(vals.shape[0], -1)[:, 0]
+
+    def acquisition_value(self, x: pd.DataFrame) -> pd.DataFrame:
+        """
+        Evaluate the acquisition function (using the cached predictor) at raw-scale points.
+
+        :param x: DataFrame of input feature rows in raw (unnormalized) scale, columns matching self.input_labels
+        :returns: DataFrame with a single "acquisition" column, one row per row of x
+        """
+        if self.predictor is None:
+            raise RuntimeError("No predictor available yet; call step() or step_within_data() first.")
+
+        target_idx = self.output_labels.index(self.quantity)
+        X, _ = self._get_data_tensors(data=x)
+        AF = self._get_acquisition_function(self.predictor)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Output shape checks failed!")
+            vals = AF(X.unsqueeze(1))
+        scores = self._select_acquisition_target(vals, target_idx)
+        return pd.DataFrame({"acquisition": scores.detach().cpu().numpy()}, index=x.index)
+
     def step(
         self, new_data: pd.DataFrame, bounds: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, pd.Series]:
@@ -546,6 +587,7 @@ class GDEOptimizer:
             else:
                 # Unknown runtime error: re-raise so we don't silently swallow unrelated failures
                 raise
+        self.predictor = predictor
 
         AF = self._get_acquisition_function(predictor)
 
@@ -570,25 +612,7 @@ class GDEOptimizer:
         opt_bounds = bounds_norm.float()
 
         def AF_q(x):
-            vals = AF(x)
-            # vals can be:
-            #  - 0D: single-candidate, single-output acquisition value
-            #  - 1D: (batch,) already scalar per point
-            #  - 2D: (batch, m) for m outputs
-            if vals.dim() == 0:
-                return vals.reshape(1)
-            if vals.dim() == 1:
-                return vals
-            if vals.dim() == 2:
-                if vals.size(1) == 1:
-                    return vals.squeeze(1)
-                if target_idx >= vals.size(1):
-                    raise RuntimeError(
-                        f"Acquisition returned {vals.size(1)} outputs but target_idx={target_idx}"
-                    )
-                return vals[:, target_idx]
-            # Fallback: flatten all but batch dim and take first column
-            return vals.view(vals.shape[0], -1)[:, 0]
+            return self._select_acquisition_target(AF(x), target_idx)
 
         next_experiment, _ = optimize_acqf(
             acq_function=AF_q,
@@ -611,6 +635,32 @@ class GDEOptimizer:
 
         return ei_val, pd.Series(
             x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
+        )
+
+    def predict(self, x: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Evaluate the cached predictor (from the last step()/step_within_data() call).
+
+        :param x: DataFrame of input feature rows in raw (unnormalized) scale, columns matching self.input_labels
+        :returns: (mean, std) DataFrames with columns self.output_labels, one row per row of x
+        """
+        if self.predictor is None:
+            raise RuntimeError("No predictor available yet; call step() or step_within_data() first.")
+
+        X, _ = self._get_data_tensors(data=x)
+
+        with torch.no_grad():
+            posterior = self.predictor.posterior(X)
+            pred_mean = posterior.mean.detach().cpu().numpy()
+            pred_std = posterior.variance.clamp_min(0).sqrt().detach().cpu().numpy()
+
+        output_means = self._means[self.output_labels].to_numpy(dtype=float)
+        output_stds = self._stds[self.output_labels].to_numpy(dtype=float)
+        pred_mean = pred_mean * output_stds + output_means
+        pred_std = pred_std * output_stds
+        return (
+            pd.DataFrame(pred_mean, columns=self.output_labels, index=x.index),
+            pd.DataFrame(pred_std, columns=self.output_labels, index=x.index),
         )
 
     def step_within_data(
@@ -691,6 +741,8 @@ class GDEOptimizer:
                 return (torch.nan, random_idx, {}) if return_metrics else (torch.nan, random_idx)
             else:
                 raise
+
+        self.predictor = predictor
 
         X, _ = self._get_data_tensors(data=possible_data)
 
