@@ -49,7 +49,7 @@ def test_gde_optimizer_within(model_type, config_overrides):
     # Use acquisition if specified in config, otherwise default
     acquisition = config_overrides.get("acquisition", "EI")
     
-    gde = GDEOptimizer(model_type, aquisition=acquisition, config=config, output_dir="./tmp_test_out")
+    gde = GDEOptimizer(model_type, acquisition=acquisition, config=config, output_dir="./tmp_test_out")
 
     df_train = df.iloc[:12]
     df_explore = df.iloc[12:]
@@ -80,7 +80,7 @@ def test_gde_optimizer_free(model_type, config_overrides):
 
     config["extra_sink"] = True # This stabilizes the liquid model
     
-    gde = GDEOptimizer(model_type, aquisition=acquisition, config=config, output_dir="./tmp_test_out")
+    gde = GDEOptimizer(model_type, acquisition=acquisition, config=config, output_dir="./tmp_test_out")
 
     ei, next_pick = gde.step(df.iloc[:18])
 
