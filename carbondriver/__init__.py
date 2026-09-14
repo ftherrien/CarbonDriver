@@ -24,7 +24,7 @@ class GDEOptimizer:
     def __init__(
         self,
         model_name="GP+Ph",
-        aquisition="EI",
+        acquisition="EI",
         quantity="FE (Eth)",
         maximize=True,
         output_dir="./out",
@@ -37,7 +37,7 @@ class GDEOptimizer:
         Initialize the optimizer with the specified model and acquisition function.
 
         :param model_name: Name of the model to use (e.g., 'GP', 'Ph', 'MLP', 'GP+Ph')
-        :param aquisition: Acquisition function to use (e.g., 'EI' for Expected Improvement)
+        :param acquisition: Acquisition function to use (e.g., 'EI' for Expected Improvement)
         :param quantity: The quantity to optimize (e.g., 'FE (Eth)')
         :param maximize: Whether to maximize or minimize the quantity
         :param output_dir: Directory to save output files
@@ -62,9 +62,9 @@ class GDEOptimizer:
                 f"Unsupported model_name '{model_name}'. Supported options are 'GP', 'Ph', 'MLP', 'GP+Ph', 'LLM'."
             )
 
-        if aquisition in SUPPORTED_AFs:
-            self.aquisition = aquisition
-            if self.aquisition == "EI":
+        if acquisition in SUPPORTED_AFs:
+            self.acquisition = acquisition
+            if self.acquisition == "EI":
                 print(
                     "WARNING: You are using expected improvement, logEI is recommended instead."
                 )
@@ -307,7 +307,7 @@ class GDEOptimizer:
                 f"Unsupported EI_reference {self.config['EI_reference']}, expected 'max' or 'min'"
             )
 
-        if self.aquisition == "EI":
+        if self.acquisition == "EI":
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 return ExpectedImprovement(
@@ -316,21 +316,21 @@ class GDEOptimizer:
                     maximize=self.maximize,
                     posterior_transform=posterior_transform,
                 )
-        if self.aquisition == "logEI":
+        if self.acquisition == "logEI":
             return LogExpectedImprovement(
                 predictor,
                 best_f=best_f,
                 maximize=self.maximize,
                 posterior_transform=posterior_transform,
             )
-        if self.aquisition == "PI":
+        if self.acquisition == "PI":
             return ProbabilityOfImprovement(
                 predictor,
                 best_f=best_f,
                 maximize=self.maximize,
                 posterior_transform=posterior_transform,
             )
-        if self.aquisition == "UCB":
+        if self.acquisition == "UCB":
             beta = self.config.get("UCB_beta", 1.0)
             return UpperConfidenceBound(
                 predictor,
@@ -338,7 +338,7 @@ class GDEOptimizer:
                 maximize=self.maximize,
                 posterior_transform=posterior_transform,
             )
-        raise ValueError(f"Unsupported acquisition function: {self.aquisition}")
+        raise ValueError(f"Unsupported acquisition function: {self.acquisition}")
 
     def _create_prompt(
         self,
