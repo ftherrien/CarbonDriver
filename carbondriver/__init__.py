@@ -292,6 +292,12 @@ class GDEOptimizer:
 
         target_idx = self.output_labels.index(self.quantity)
 
+        posterior_transform = None
+        if len(self.output_labels) > 1 and isinstance(predictor, BoTorchGP):
+            weights = torch.zeros(len(self.output_labels), dtype=torch.float32)
+            weights[target_idx] = 1.0
+            posterior_transform = ScalarizedPosteriorTransform(weights=weights)
+
         if self.config["EI_reference"] == "max":
             best_f = y[:, target_idx].max()
         elif self.config["EI_reference"] == "min":
@@ -308,18 +314,21 @@ class GDEOptimizer:
                     predictor,
                     best_f=best_f,
                     maximize=self.maximize,
+                    posterior_transform=posterior_transform,
                 )
         if self.aquisition == "logEI":
             return LogExpectedImprovement(
                 predictor,
                 best_f=best_f,
                 maximize=self.maximize,
+                posterior_transform=posterior_transform,
             )
         if self.aquisition == "PI":
             return ProbabilityOfImprovement(
                 predictor,
                 best_f=best_f,
                 maximize=self.maximize,
+                posterior_transform=posterior_transform,
             )
         if self.aquisition == "UCB":
             beta = self.config.get("UCB_beta", 1.0)
@@ -327,6 +336,7 @@ class GDEOptimizer:
                 predictor,
                 beta=beta,
                 maximize=self.maximize,
+                posterior_transform=posterior_transform,
             )
         raise ValueError(f"Unsupported acquisition function: {self.aquisition}")
 
