@@ -197,6 +197,9 @@ class GDEOptimizer:
 
         :returns: (model, stats) tuple where model is the trained predictor and stats is a DataFrame with training metrics.
         """
+        if self.model in {PhModel, MultitaskGPhysModel} and self.config.get("torch_seed") is not None:
+            torch.manual_seed(self.config["torch_seed"])
+
         X, y = self._get_data_tensors(update_stats=True)
 
         system_phase = self.config.get("system_phase") or ("liquid" if self.config.get("dataset") == "bicarb" else "gas")
