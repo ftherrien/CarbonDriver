@@ -226,7 +226,8 @@ class GDEOptimizer:
                 n_inputs=len(self.input_labels),
                 system_phase=system_phase,
                 means=self._means,
-                stds=self._stds
+                stds=self._stds,
+                output_labels=self.output_labels,
             )
 
             # Train GP+Ph and return BoTorch-compatible model
@@ -250,7 +251,8 @@ class GDEOptimizer:
                     n_inputs=len(self.input_labels),
                     system_phase=system_phase,
                     means=self._means,
-                    stds=self._stds
+                    stds=self._stds,
+                    output_labels=self.output_labels,
                 )
 
             elif self.model == MLPModel:
