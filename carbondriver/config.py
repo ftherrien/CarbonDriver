@@ -16,6 +16,7 @@ default_config = {
     "current_density": None,
     "zero_eps_thickness": None,
     "t_CO2": None,
+    "torch_seed": None,  # seed torch before fitting PhModel/GP+Ph, for reproducibility
     "propose_random_when_underdetermined": True,
     # LLM-based active learning settings (used when model_name="LLM")
     "llm_api": "gemini",          # "gemini", "openai", or "claude"
