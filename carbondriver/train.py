@@ -48,17 +48,21 @@ def get_nll(
 def get_nll_samples(
     samples: torch.Tensor,
     targets: torch.Tensor,
+    mean_shifter: Optional[torch.Tensor] = None,
     covariance_scaler: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Compute NLL from samples, optionally scaling diagonal covariance.
 
     :param samples: samples from predictive distribution
     :param targets: target values
+    :param mean_shifter: optional scalar to shift the mean
     :param covariance_scaler: optional scalar to scale variance
     :returns: NLL scalar
     """
     mean = samples.mean(dim=0)
     covariance = get_cov(samples)
+    if mean_shifter is not None:
+        mean += mean_shifter
     if covariance_scaler is not None:
         inds = torch.arange(covariance.shape[0])
         covariance[inds, inds] *= covariance_scaler
@@ -77,6 +81,7 @@ def train_model_ens(
     i: int,
     progress: bool = False,
     plot: bool = False,
+    shift_mean: bool = True,
 ) -> Tuple[pd.DataFrame, EnsPredictor]:
     """Train 50-model ensemble with per-model bagging and variance scaling.
 
@@ -88,6 +93,7 @@ def train_model_ens(
     :param i: iteration index for file naming
     :param progress: whether to show progress bar
     :param plot: whether to plot diagnostics
+    :param shift_mean: whether to include learnable mean shift parameter
     :returns: tuple of (stats_df, ensemble_predictor)
     """
     DNAME = Path(DNAME)
@@ -114,7 +120,12 @@ def train_model_ens(
 
     optimizer = torch.optim.Adam(params.values(), lr=0.001)
     variance_scaler = torch.tensor(1.0, requires_grad=True)
-    variance_optimizer = torch.optim.Adam([variance_scaler], lr=1)
+    if shift_mean:
+        mean_shifter = torch.tensor(0.0, requires_grad=True)
+        nll_optimizer = torch.optim.Adam([mean_shifter, variance_scaler], lr=1)
+    else:
+        mean_shifter = torch.tensor(0.0)
+        nll_optimizer = torch.optim.Adam([variance_scaler], lr=1)
 
     # batch the train data
     num_data_per_model = ceil(X_train.shape[0] * 0.5)
@@ -157,16 +168,18 @@ def train_model_ens(
                 fe_train = vmap(fmodel, in_dims=(0, 0, None), randomness="different")(
                     params, buffers, X_train
                 )
-                mean_train = fe_train.mean(dim=0)
+                mean_train = fe_train.mean(dim=0) + mean_shifter
                 std_train = fe_train.std(dim=0) * variance_scaler.sqrt()
-            variance_optimizer.zero_grad()
+            nll_optimizer.zero_grad()
             nll_train = get_nll_samples(
-                fe_train, y_train, covariance_scaler=variance_scaler
+                fe_train, y_train,
+                covariance_scaler=variance_scaler, mean_shifter=mean_shifter
             )
             nll_train.backward()
-            variance_optimizer.step()
+            nll_optimizer.step()
             stats.loc[it, "nll"] = nll_train.item()
             stats.loc[it, "variance_scaler"] = variance_scaler.item()
+            stats.loc[it, "mean_shifter"] = mean_shifter.item()
 
             base_model.train()
 
