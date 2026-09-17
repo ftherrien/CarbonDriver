@@ -84,7 +84,7 @@ def load_gas_data(file: Optional[Path] = None) -> pd.DataFrame:
 
     current_density = current[0] * 1e3 / area  # mA/cm^2
     
-    return df.astype(float), current_density
+    return df.astype(float), float(current_density)
 
 def load_bicarb_data(filepath: Optional[Path] = None) -> pd.DataFrame:
     """
