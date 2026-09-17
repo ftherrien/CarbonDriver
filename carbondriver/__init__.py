@@ -1,4 +1,4 @@
-from .models import PhModel, MLPModel, MultitaskGPModel, BoTorchGP, MultitaskGPhysModel
+from .models import PhModel, MLPModel, MultitaskGPModel, BoTorchGP, MultitaskGPhysModel, PHYSICS_OUTPUTS
 from .train import train_model_ens, train_GP_model, train_GP_Ph_model
 from .loaders import feature_stats
 from .config import default_config
@@ -185,6 +185,13 @@ class GDEOptimizer:
 
         if isinstance(new_data, pd.Series):
             new_data = new_data.to_frame().T
+
+        if self.model in {PhModel, MultitaskGPhysModel}:
+            physics_outputs = PHYSICS_OUTPUTS["bicarb" if self.config.get("dataset") == "bicarb" else "gas"]
+            for label in physics_outputs:
+                if label in new_data.columns and not new_data[label].between(0, 1).all():
+                    raise ValueError(
+                        f"PhModel output '{label}' must be a fraction in [0, 1], got values outside this range. ")
 
         self.df = pd.concat([self.df, new_data], axis=0)
 
