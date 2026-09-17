@@ -108,7 +108,7 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
     acquisition = config.get("acquisition", "EI")
     gde = GDEOptimizer(
         model_name=model_name,
-        aquisition=acquisition,
+        acquisition=acquisition,
         quantity=config["property_name"],
         maximize=True,
         output_dir=str(run_dir),

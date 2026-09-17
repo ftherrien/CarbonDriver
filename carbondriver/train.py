@@ -255,7 +255,8 @@ def train_GP_model(
         ax[1].axline((0, 0), slope=1, c="k", ls="--")
         ax[2].axline((0, 0), slope=1, c="k", ls="--")
 
-    likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=2)
+    num_tasks = y_train.shape[-1] if y_train.ndim > 1 else 1
+    likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=num_tasks)
     model = MultitaskGPModel(X_train, y_train, likelihood)
     # Use the adam optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=0.1)
@@ -401,13 +402,14 @@ def train_GP(
     """Train GP+Physics model with frozen mean model.
 
     :param X_train: training features of shape (n, d)
-    :param y_train: training targets of shape (n, 2)
+    :param y_train: training targets of shape (n, num_tasks)
     :param mean_model: physics-informed model for mean function (will be frozen)
     :param num_iter: number of training iterations
     :returns: tuple of (stats_df, gp_physics_model)
     """
     # set up model and optimizer
-    likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=2)
+    num_tasks = y_train.shape[-1] if y_train.ndim > 1 else 1
+    likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=num_tasks)
 
     model = MultitaskGPhysModel(
         X_train, y_train, likelihood, model=mean_model, freeze_model=True
