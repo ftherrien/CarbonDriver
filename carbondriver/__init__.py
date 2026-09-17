@@ -484,7 +484,7 @@ class GDEOptimizer:
 
     def _random_candidate(self, raw_bounds: torch.Tensor) -> pd.Series:
         x_candidate = (
-            torch.randn(len(self.input_labels))
+            torch.rand(len(self.input_labels))
             * (raw_bounds[1, :] - raw_bounds[0, :])
             + raw_bounds[0, :]
         )
