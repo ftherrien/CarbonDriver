@@ -471,7 +471,7 @@ class GDEOptimizer:
         return self._read_response(text)
 
     def _check_underdetermined_fallback(self, error: Exception) -> None:
-        """Raise if the random-candidate fallback is disabled, else print a notice."""
+        """Raise if the random-candidate fallback is disabled, else warn about it."""
         if not self.config.get("propose_random_when_underdetermined", True):
             raise RuntimeError(
                 "Carbon Driver could not fit the optimization model; the training "
@@ -480,7 +480,7 @@ class GDEOptimizer:
                 "generated. Set config['propose_random_when_underdetermined'] = "
                 "True to fall back to a random candidate instead."
             ) from error
-        print(f"System may be underdetermined ({error}). Returning a random candidate.")
+        warnings.warn(f"System may be underdetermined ({error}). Returning a random candidate.")
 
     def _random_candidate(self, raw_bounds: torch.Tensor) -> pd.Series:
         x_candidate = (
@@ -541,8 +541,9 @@ class GDEOptimizer:
         :param bounds: Optional bounds for the optimization (default: inferred from data)
         :returns: tuple of (acquisition_function_value, next_experiment_parameters)
         """
+        
         self.update_data(new_data)
-
+        
         if self.model == "LLM":
             attempt = 0
             self.raw_messages = []  # Reset message history for this step
@@ -591,7 +592,7 @@ class GDEOptimizer:
             predictor, stats = self.get_predictor()
         except torch._C._LinAlgError as error:
             self._check_underdetermined_fallback(error)
-            return torch.nan, self._random_candidate(raw_bounds)
+            return None, self._random_candidate(raw_bounds)
         except RuntimeError as e:
             # Handle gpytorch ExactGP runtime error when model is called with inputs
             # that don't exactly match the stored training inputs (raised in debug mode).
@@ -601,7 +602,7 @@ class GDEOptimizer:
                 or "train_inputs cannot be None" in msg
             ):
                 self._check_underdetermined_fallback(e)
-                return torch.nan, self._random_candidate(raw_bounds)
+                return None, self._random_candidate(raw_bounds)
             else:
                 # Unknown runtime error: re-raise so we don't silently swallow unrelated failures
                 raise
@@ -662,16 +663,20 @@ class GDEOptimizer:
         :param x: DataFrame of input feature rows in raw (unnormalized) scale, columns matching self.input_labels
         :returns: (mean, std) DataFrames with columns self.output_labels, one row per row of x
         """
+
+        if not isinstance(x, pd.DataFrame):
+            # This makes sure X will always be of size (batch, features) otherwise the squeeze below will fail.
+            raise TypeError("Input x must be a pandas DataFrame.")
+        
         if self.predictor is None:
             raise RuntimeError("No predictor available yet; call step() or step_within_data() first.")
 
         X, _ = self._get_data_tensors(data=x)
 
-        with torch.no_grad():
-            posterior = self.predictor.posterior(X)
-            pred_mean = posterior.mean.detach().cpu().numpy()
-            pred_std = posterior.variance.clamp_min(0).sqrt().detach().cpu().numpy()
-
+        posterior = self.predictor.posterior(X)
+        pred_mean = posterior.mean.squeeze(1).detach().numpy()
+        pred_std = posterior.variance.sqrt().squeeze(1).detach().numpy()
+            
         output_means = self._means[self.output_labels].to_numpy(dtype=float)
         output_stds = self._stds[self.output_labels].to_numpy(dtype=float)
         pred_mean = pred_mean * output_stds + output_means
