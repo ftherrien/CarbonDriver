@@ -261,6 +261,7 @@ class EnsPredictor(EnsembleModel):
             X_in = X.view(-1, X.shape[-1])
 
         model_output = self.model_input(X_in)
+        
         # Handle different output dimensions
         if model_output.dim() == 3:
             # Output is [ensemble, batch, features] -> [batch, ensemble, features]
