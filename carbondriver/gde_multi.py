@@ -151,6 +151,8 @@ class System(torch.nn.Module):
         self.c_khco3 = c_khco3
         self.c_k = c_k
         self.dic = dic
+        if system_phase not in ["gas", "liquid"]:
+            raise ValueError("system_phase must be 'gas' or 'liquid'")
         self.system_phase = system_phase
         self.extra_sink = extra_sink
         self.constant_J_in = constant_J_in

@@ -10,10 +10,11 @@ from pandas import Series
 SPECIAL_FEATURES = ["zero_eps_thickness", "current_density"]
 
 # Names and order of the two physics quantities PhModel always computes internally.
-PHYSICS_OUTPUTS = {
-    "gas": ["FE (Eth)", "FE (CO)"],
-    "bicarb": ["FE_CO", "CO2 utilization"],
-}
+MODELED_QUANTITIES = {
+    "FE (Eth)": "fe_c2h4",
+    "FE (CO)": "fe_co", 
+    "FE_CO": "fe_co",
+    "CO2 utilization": "co2_utilization"}
 
 class PhModel(torch.nn.Module):
     """
@@ -44,7 +45,7 @@ class PhModel(torch.nn.Module):
         system_phase: Literal["gas", "liquid"] = "gas",
         means: Series = Series(),
         stds: Series = Series(),
-        output_labels: Optional[list] = None,
+        output_labels: List[str] = ["FE (Eth)", "FE (CO)"]
     ) -> None:
         """
         :param dropout: dropout probability
@@ -62,14 +63,13 @@ class PhModel(torch.nn.Module):
         if n_inputs < 1:
             raise ValueError("n_inputs must be >= 1")
 
-        physics_outputs = PHYSICS_OUTPUTS["bicarb" if (config or {}).get("dataset") == "bicarb" else "gas"]
         if output_labels is None:
-            self.output_indices = list(range(len(physics_outputs)))
+            raise ValueError(f"output_labels among {list(MODELED_QUANTITIES.keys())} must be provided")
         else:
-            unknown = [label for label in output_labels if label not in physics_outputs]
+            unknown = [label for label in output_labels if label not in MODELED_QUANTITIES]
             if unknown:
-                raise ValueError(f"output_labels {unknown} are not among physics outputs {physics_outputs}")
-            self.output_indices = [physics_outputs.index(label) for label in output_labels]
+                raise ValueError(f"output_labels {unknown} are not among physics outputs {list(MODELED_QUANTITIES.keys())}")
+            self.output_labels = output_labels
 
         if system_phase == "gas":
             self.t_CO2_fixed = 0
@@ -200,11 +200,7 @@ class PhModel(torch.nn.Module):
             t_CO2=t_CO2,
         )
 
-        if self.config.get("dataset") == "bicarb":
-            out = torch.cat([solution["fe_co"], solution["co2_utilization"]], dim=-1)
-        else:
-            out = torch.cat([solution["fe_c2h4"], solution["fe_co"]], dim=-1)
-        return out[..., self.output_indices]
+        return torch.cat([solution[MODELED_QUANTITIES[label]] for label in self.output_labels], dim=-1)
 
 
 class MLPModel(torch.nn.Module):
