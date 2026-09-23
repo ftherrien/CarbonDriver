@@ -1,4 +1,4 @@
-from .models import PhModel, MLPModel, MultitaskGPModel, BoTorchGP, MultitaskGPhysModel, PHYSICS_OUTPUTS
+from .models import PhModel, MLPModel, MultitaskGPModel, BoTorchGP, MultitaskGPhysModel, MODELED_QUANTITIES
 from .train import train_model_ens, train_GP_model, train_GP_Ph_model
 from .loaders import feature_stats
 from .config import default_config
@@ -76,7 +76,6 @@ class GDEOptimizer:
         self.output_dir = output_dir
 
         self.config = default_config | config
-        dataset = self.config.get("dataset", "gas")
 
         self.maximize = maximize
 
@@ -187,8 +186,7 @@ class GDEOptimizer:
             new_data = new_data.to_frame().T
 
         if self.model in {PhModel, MultitaskGPhysModel}:
-            physics_outputs = PHYSICS_OUTPUTS["bicarb" if self.config.get("dataset") == "bicarb" else "gas"]
-            for label in physics_outputs:
+            for label in MODELED_QUANTITIES:
                 if label in new_data.columns and not new_data[label].between(0, 1).all():
                     raise ValueError(
                         f"PhModel output '{label}' must be a fraction in [0, 1], got values outside this range. ")
@@ -209,7 +207,7 @@ class GDEOptimizer:
 
         X, y = self._get_data_tensors(update_stats=True)
 
-        system_phase = self.config.get("system_phase") or ("liquid" if self.config.get("dataset") == "bicarb" else "gas")
+        system_phase = self.config.get("system_phase", None)
 
         # Special handling for GP and GP+Ph models: these use gpytorch training functions
         # (they are not compatible with the ensemble training pipeline used for MLP/Ph).
