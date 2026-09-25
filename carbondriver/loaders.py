@@ -91,9 +91,66 @@ def load_gas_data(
     
     return df.astype(float), float(current_density)
 
+def load_campaign_data(
+    file: Optional[Path] = None,
+    electrode_area_cm2: float = DEFAULT_ELECTRODE_AREA_CM2,
+    convert_to_zlt: bool = True,
+) -> pd.DataFrame:
+    """Load experimental data from Excel and compute electrode thickness.
+
+    :param file: path to Excel file (default: ./data/campaign_1.xlsx)
+    :param electrode_area_cm2: active electrode area used for thickness and current density
+    :returns:
+        DataFrame with features and experimental Faradaic efficiencies
+        current_density
+    """
+
+    inout_cols = ["Hotplate temperature (catalyst)", "Ink mass", "FE CO"]
+    
+    if file is None:
+        file = Path("./data/campaign_1.xlsx")
+    df_dict = pd.read_excel(file, skiprows=[1], index_col="Sample ID", sheet_name=None)
+
+    df_dict.pop('V1 UBC optimization experiment', None)
+    df_dict.pop('Random', None)
+    
+    df = pd.concat(df_dict.values())
+
+    df = df.drop_duplicates(subset=inout_cols, keep="first")
+
+    df = df.dropna(subset=inout_cols)
+
+    if sum(df.index.duplicated()) != 0:
+        print(f"Warning: duplicate Sample IDs found in campaign data: {df.index[df.index.duplicated()]}")
+
+    df = df.reset_index()
+    
+    df = df[["Type", "Exp id", "Hotplate temperature (catalyst)", "Ink mass", "FE CO"]]
+
+
+    df.loc[:, "Hotplate temperature (catalyst)"] = df.loc[:, "Hotplate temperature (catalyst)"].astype(float)
+
+    df["FE CO"] = df["FE CO"] / 100
+
+    
+    if convert_to_zlt:
+        mass = df["Ink mass"] * 1e-6  # kg
+        area = electrode_area_cm2  # cm^2
+        A = area * 1e-4  # m^2
+        thickness = (mass / Ag_DENSITY) / A  # m
+        df["zero_eps_thickness"]  = thickness
+        df = df.drop(columns=["Ink mass"])
+
+    df["triplet"] = df["Exp id"].astype(int)
+    df = df.drop(columns=["Exp id"])
+    
+    return df
+
+
 def load_bicarb_data(
     filepath: Optional[Path] = None,
     electrode_area_cm2: float = DEFAULT_ELECTRODE_AREA_CM2,
+    convert_to_zlt = True
 ) -> pd.DataFrame:
     """
     Reads the Bicarb CSV and melts the multiple result columns into new entries.
@@ -115,11 +172,14 @@ def load_bicarb_data(
     df["FE_CO"] = df["FE_CO"] / 100
     df["CO2 utilization"] = df["CO2 utilization"] / 100
 
-    mass = df["Ag weight"] * 1e-6  # kg
-    area = electrode_area_cm2  # cm^2
-    A = area * 1e-4  # m^2
-    thickness = (mass / Ag_DENSITY) / A  # m
-    df.insert(1, column="zero_eps_thickness", value=thickness)
+    if convert_to_zlt:
+        mass = df["Ag weight"] * 1e-6  # kg
+        area = electrode_area_cm2  # cm^2
+        A = area * 1e-4  # m^2
+        thickness = (mass / Ag_DENSITY) / A  # m
+        df["zero_eps_thickness"]  = thickness
+        df = df.drop(columns=["Ag weight"])
+
     df.rename(columns={"Current density": "current_density"}, inplace=True)
 
     return df.astype(float)
