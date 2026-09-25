@@ -32,9 +32,9 @@ def converter(df, direction="to_zlt", electrode_area_cm2: float = DEFAULT_ELECTR
 
 if __name__ == "__main__":
 
-    df = load_campaign_data(convert_to_zlt = False)
+    df, init_triplets = load_campaign_data(convert_to_zlt = False)
     
-    df_triplet_means = df.drop(columns=["Type"]).groupby('triplet').mean()
+    df_triplet_means = df.groupby('triplet').mean()
     xy = df_triplet_means[INPUT_LABELS].to_numpy()
     z= df_triplet_means["FE CO"].to_numpy()
 
@@ -65,7 +65,7 @@ if __name__ == "__main__":
     # Simulated campaign
     
     starting_df = converter(df, "to_zlt")
-    starting_df = starting_df[starting_df["Type"] == "init"].drop(columns=["Type"])
+    starting_df = starting_df[starting_df["triplet"].isin(init_triplets)]
 
     zlt_bounds = torch.tensor(converter(pd.DataFrame(BOUNDS.numpy(), columns=INPUT_LABELS), "to_zlt").to_numpy(), dtype=torch.float32)
 
