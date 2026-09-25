@@ -14,6 +14,7 @@ MODELED_QUANTITIES = {
     "FE (Eth)": "fe_c2h4",
     "FE (CO)": "fe_co", 
     "FE_CO": "fe_co",
+    "FE CO": "fe_co",
     "CO2 utilization": "co2_utilization"}
 
 class PhModel(torch.nn.Module):
