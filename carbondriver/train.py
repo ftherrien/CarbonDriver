@@ -236,7 +236,7 @@ def train_model_ens(
             params, buffers, x
         )
         y_diff = y - y.mean(dim=0, keepdim=True)
-        return y.mean(dim=0) + y_diff * variance_scaler.sqrt()
+        return y.mean(dim=0) + mean_shifter + y_diff * variance_scaler.sqrt()
 
     return stats, EnsPredictor(scaled_model)
 
