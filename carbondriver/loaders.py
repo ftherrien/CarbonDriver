@@ -132,7 +132,12 @@ def load_campaign_data(
 
     df["FE CO"] = df["FE CO"] / 100
 
+    df["triplet"] = df.groupby(["Hotplate temperature (catalyst)", "Ink mass"]).ngroup()
     
+    init_triplets = df[df["Type"] == "init"]["triplet"].unique().astype(int).tolist()
+
+    df = df.drop(columns=["Type", "Exp id"])
+
     if convert_to_zlt:
         mass = df["Ink mass"] * 1e-6  # kg
         area = electrode_area_cm2  # cm^2
@@ -140,11 +145,8 @@ def load_campaign_data(
         thickness = (mass / Ag_DENSITY) / A  # m
         df["zero_eps_thickness"]  = thickness
         df = df.drop(columns=["Ink mass"])
-
-    df["triplet"] = df["Exp id"].astype(int)
-    df = df.drop(columns=["Exp id"])
     
-    return df
+    return df, init_triplets
 
 
 def load_bicarb_data(
