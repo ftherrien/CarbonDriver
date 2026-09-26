@@ -307,6 +307,7 @@ if __name__ == '__main__':
                 init_triplets = None
             elif base_config.get("initial_triplets") != "init":
                 init_triplets = base_config.get("initial_triplets")
+            print("Triplet original order", df)
         else:
             raise ValueError(f"Unknown dataset: {dataset}")
 

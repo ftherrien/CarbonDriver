@@ -125,7 +125,7 @@ def load_campaign_data(
 
     df = df.reset_index()
     
-    df = df[["Type", "Exp id", "Hotplate temperature (catalyst)", "Ink mass", "FE CO"]]
+    df = df[["Type", "Hotplate temperature (catalyst)", "Ink mass", "FE CO"]]
 
 
     df.loc[:, "Hotplate temperature (catalyst)"] = df.loc[:, "Hotplate temperature (catalyst)"].astype(float)
@@ -136,7 +136,7 @@ def load_campaign_data(
     
     init_triplets = df[df["Type"] == "init"]["triplet"].unique().astype(int).tolist()
 
-    df = df.drop(columns=["Type", "Exp id"])
+    df = df.drop(columns=["Type"])
 
     if convert_to_zlt:
         mass = df["Ink mass"] * 1e-6  # kg

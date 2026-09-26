@@ -22,10 +22,10 @@ def converter(df, direction="to_zlt", electrode_area_cm2: float = DEFAULT_ELECTR
         mass = df["Ink mass"] * 1e-6  # kg
         thickness = (mass / Ag_DENSITY) / A  # m
         df["zero_eps_thickness"]  = thickness
-        df = df.drop(columns=["Ink mass"])
+        df = df.drop("Ink mass", axis=len(df.axes) - 1)
     elif direction == "from_zlt":
         df["Ink mass"] = df["zero_eps_thickness"] * A * Ag_DENSITY * 1e6  # kg
-        df = df.drop(columns=["zero_eps_thickness"])
+        df = df.drop("zero_eps_thickness", axis=len(df.axes) - 1)
 
     return df
     
@@ -64,9 +64,13 @@ if __name__ == "__main__":
 
     # Simulated campaign
     
-    starting_df = converter(df, "to_zlt")
-    starting_df = starting_df[starting_df["triplet"].isin(init_triplets)]
-
+    data = df[df["triplet"].isin(init_triplets)]
+    starting_df = converter(data.copy(), "to_zlt")
+    data["Type"] = "init"
+    data = data.drop(columns=["triplet"])
+    data["FE CO"] = data["FE CO"] * 100
+    
+    
     zlt_bounds = torch.tensor(converter(pd.DataFrame(BOUNDS.numpy(), columns=INPUT_LABELS), "to_zlt").to_numpy(), dtype=torch.float32)
 
     print("Bounds:\n", zlt_bounds)
@@ -83,7 +87,7 @@ if __name__ == "__main__":
     
         ei, new_data = gde.step(new_data)
 
-        new_data_converted = converter(new_data, "from_zlt")
+        new_data_converted = converter(new_data, "from_zlt").copy()
 
         print(f"Step {i+1}: Suggested experiment:", new_data_converted)
         
@@ -91,4 +95,11 @@ if __name__ == "__main__":
 
         print("Sim lab result:", new_data["FE CO"])
 
+        new_data_converted["FE CO"] = new_data["FE CO"] * 100
+        new_data_converted["Type"] = "simulated"
+        data = pd.concat([data, new_data_converted.to_frame().T], axis=0)
 
+    data = data.reset_index(drop=True)
+    data = pd.concat([pd.DataFrame(np.zeros((1,data.shape[1])), columns=data.columns), data], axis=0)
+    data.index.name = "Sample ID"
+    data.to_excel("simulated_campaign_results.xlsx", index=True)
