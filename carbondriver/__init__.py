@@ -1,4 +1,4 @@
-from .models import PhModel, MLPModel, MultitaskGPModel, BoTorchGP, MultitaskGPhysModel
+from .models import PhModel, MLPModel, MultitaskGPModel, BoTorchGP, MultitaskGPhysModel, MODELED_QUANTITIES
 from .train import train_model_ens, train_GP_model, train_GP_Ph_model
 from .loaders import feature_stats
 from .config import default_config
@@ -24,7 +24,7 @@ class GDEOptimizer:
     def __init__(
         self,
         model_name="GP+Ph",
-        aquisition="EI",
+        acquisition="EI",
         quantity="FE (Eth)",
         maximize=True,
         output_dir="./out",
@@ -37,7 +37,7 @@ class GDEOptimizer:
         Initialize the optimizer with the specified model and acquisition function.
 
         :param model_name: Name of the model to use (e.g., 'GP', 'Ph', 'MLP', 'GP+Ph')
-        :param aquisition: Acquisition function to use (e.g., 'EI' for Expected Improvement)
+        :param acquisition: Acquisition function to use (e.g., 'EI' for Expected Improvement)
         :param quantity: The quantity to optimize (e.g., 'FE (Eth)')
         :param maximize: Whether to maximize or minimize the quantity
         :param output_dir: Directory to save output files
@@ -62,9 +62,9 @@ class GDEOptimizer:
                 f"Unsupported model_name '{model_name}'. Supported options are 'GP', 'Ph', 'MLP', 'GP+Ph', 'LLM'."
             )
 
-        if aquisition in SUPPORTED_AFs:
-            self.aquisition = aquisition
-            if self.aquisition == "EI":
+        if acquisition in SUPPORTED_AFs:
+            self.acquisition = acquisition
+            if self.acquisition == "EI":
                 print(
                     "WARNING: You are using expected improvement, logEI is recommended instead."
                 )
@@ -76,7 +76,6 @@ class GDEOptimizer:
         self.output_dir = output_dir
 
         self.config = default_config | config
-        dataset = self.config.get("dataset", "gas")
 
         self.maximize = maximize
 
@@ -87,6 +86,8 @@ class GDEOptimizer:
         self.df = pd.DataFrame()
 
         self.llm_history = []  # list of {"step": i, "suggestion": ..., "reason": ...}
+
+        self.predictor = None  # cached by step()/step_within_data(): the model fit used for the last recommendation
 
         self._bounds = bounds
 
@@ -145,8 +146,8 @@ class GDEOptimizer:
 
         df_clean = (df_clean - self._means) / self._stds
 
-        X = torch.tensor(df_clean.loc[:, self.input_labels].values, dtype=torch.float32)
-        y = torch.tensor(df_clean.loc[:, output_labels].values, dtype=torch.float32)
+        X = torch.tensor(df_clean.loc[:, self.input_labels].to_numpy().copy(), dtype=torch.float32)
+        y = torch.tensor(df_clean.loc[:, output_labels].to_numpy().copy(), dtype=torch.float32)
 
         return X, y
 
@@ -184,6 +185,12 @@ class GDEOptimizer:
         if isinstance(new_data, pd.Series):
             new_data = new_data.to_frame().T
 
+        if self.model in {PhModel, MultitaskGPhysModel}:
+            for label in MODELED_QUANTITIES:
+                if label in new_data.columns and not new_data[label].between(0, 1).all():
+                    raise ValueError(
+                        f"PhModel output '{label}' must be a fraction in [0, 1], got values outside this range. ")
+
         self.df = pd.concat([self.df, new_data], axis=0)
 
         if "triplet" in self.df.columns:
@@ -195,9 +202,12 @@ class GDEOptimizer:
 
         :returns: (model, stats) tuple where model is the trained predictor and stats is a DataFrame with training metrics.
         """
+        if self.model in {PhModel, MultitaskGPhysModel} and self.config.get("torch_seed") is not None:
+            torch.manual_seed(self.config["torch_seed"])
+
         X, y = self._get_data_tensors(update_stats=True)
 
-        system_phase = self.config.get("system_phase") or ("liquid" if self.config.get("dataset") == "bicarb" else "gas")
+        system_phase = self.config.get("system_phase", None)
 
         # Special handling for GP and GP+Ph models: these use gpytorch training functions
         # (they are not compatible with the ensemble training pipeline used for MLP/Ph).
@@ -221,7 +231,8 @@ class GDEOptimizer:
                 n_inputs=len(self.input_labels),
                 system_phase=system_phase,
                 means=self._means,
-                stds=self._stds
+                stds=self._stds,
+                output_labels=self.output_labels,
             )
 
             # Train GP+Ph and return BoTorch-compatible model
@@ -245,7 +256,8 @@ class GDEOptimizer:
                     n_inputs=len(self.input_labels),
                     system_phase=system_phase,
                     means=self._means,
-                    stds=self._stds
+                    stds=self._stds,
+                    output_labels=self.output_labels,
                 )
 
             elif self.model == MLPModel:
@@ -285,6 +297,12 @@ class GDEOptimizer:
 
         target_idx = self.output_labels.index(self.quantity)
 
+        posterior_transform = None
+        if len(self.output_labels) > 1 and isinstance(predictor, BoTorchGP):
+            weights = torch.zeros(len(self.output_labels), dtype=torch.float32)
+            weights[target_idx] = 1.0
+            posterior_transform = ScalarizedPosteriorTransform(weights=weights)
+
         if self.config["EI_reference"] == "max":
             best_f = y[:, target_idx].max()
         elif self.config["EI_reference"] == "min":
@@ -294,34 +312,38 @@ class GDEOptimizer:
                 f"Unsupported EI_reference {self.config['EI_reference']}, expected 'max' or 'min'"
             )
 
-        if self.aquisition == "EI":
+        if self.acquisition == "EI":
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 return ExpectedImprovement(
                     predictor,
                     best_f=best_f,
                     maximize=self.maximize,
+                    posterior_transform=posterior_transform,
                 )
-        if self.aquisition == "logEI":
+        if self.acquisition == "logEI":
             return LogExpectedImprovement(
                 predictor,
                 best_f=best_f,
                 maximize=self.maximize,
+                posterior_transform=posterior_transform,
             )
-        if self.aquisition == "PI":
+        if self.acquisition == "PI":
             return ProbabilityOfImprovement(
                 predictor,
                 best_f=best_f,
                 maximize=self.maximize,
+                posterior_transform=posterior_transform,
             )
-        if self.aquisition == "UCB":
+        if self.acquisition == "UCB":
             beta = self.config.get("UCB_beta", 1.0)
             return UpperConfidenceBound(
                 predictor,
                 beta=beta,
                 maximize=self.maximize,
+                posterior_transform=posterior_transform,
             )
-        raise ValueError(f"Unsupported acquisition function: {self.aquisition}")
+        raise ValueError(f"Unsupported acquisition function: {self.acquisition}")
 
     def _create_prompt(
         self,
@@ -406,13 +428,9 @@ class GDEOptimizer:
         api_key = self.config.get("llm_api_key", None)
 
         if api == "gemini":
-            from google import genai
-            client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(
-                model=self.config["llm_model"],
-                contents=[system, user])
-                    
-            text = response.text
+            raise NotImplementedError(
+                "The 'gemini' llm_api is not currently supported (rate-limited/unavailable); use 'openai' or 'claude' instead."
+            )
 
         elif api == "openai":
             from openai import OpenAI
@@ -450,6 +468,67 @@ class GDEOptimizer:
         
         return self._read_response(text)
 
+    def _check_underdetermined_fallback(self, error: Exception) -> None:
+        """Raise if the random-candidate fallback is disabled, else warn about it."""
+        if not self.config.get("propose_random_when_underdetermined", True):
+            raise RuntimeError(
+                "Carbon Driver could not fit the optimization model; the training "
+                "data may be underdetermined (duplicate conditions, too little "
+                "variation, or too few observations). No recommendation was "
+                "generated. Set config['propose_random_when_underdetermined'] = "
+                "True to fall back to a random candidate instead."
+            ) from error
+        warnings.warn(f"System may be underdetermined ({error}). Returning a random candidate.")
+
+    def _random_candidate(self, raw_bounds: torch.Tensor) -> pd.Series:
+        x_candidate = (
+            torch.rand(len(self.input_labels))
+            * (raw_bounds[1, :] - raw_bounds[0, :])
+            + raw_bounds[0, :]
+        )
+        return pd.Series(
+            x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
+        )
+
+    def _select_acquisition_target(self, vals: torch.Tensor, target_idx: int) -> torch.Tensor:
+        # vals can be:
+        #  - 0D: single-candidate, single-output acquisition value
+        #  - 1D: (batch,) already scalar per point
+        #  - 2D: (batch, m) for m outputs
+        if vals.dim() == 0:
+            return vals.reshape(1)
+        if vals.dim() == 1:
+            return vals
+        if vals.dim() == 2:
+            if vals.size(1) == 1:
+                return vals.squeeze(1)
+            if target_idx >= vals.size(1):
+                raise RuntimeError(
+                    f"Acquisition returned {vals.size(1)} outputs but target_idx={target_idx}"
+                )
+            return vals[:, target_idx]
+        # Fallback: flatten all but batch dim and take first column
+        return vals.view(vals.shape[0], -1)[:, 0]
+
+    def acquisition_value(self, x: pd.DataFrame) -> pd.DataFrame:
+        """
+        Evaluate the acquisition function (using the cached predictor) at raw-scale points.
+
+        :param x: DataFrame of input feature rows in raw (unnormalized) scale, columns matching self.input_labels
+        :returns: DataFrame with a single "acquisition" column, one row per row of x
+        """
+        if self.predictor is None:
+            raise RuntimeError("No predictor available yet; call step() or step_within_data() first.")
+
+        target_idx = self.output_labels.index(self.quantity)
+        X, _ = self._get_data_tensors(data=x)
+        AF = self._get_acquisition_function(self.predictor)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Output shape checks failed!")
+            vals = AF(X.unsqueeze(1))
+        scores = self._select_acquisition_target(vals, target_idx)
+        return pd.DataFrame({"acquisition": scores.detach().cpu().numpy()}, index=x.index)
+
     def step(
         self, new_data: pd.DataFrame, bounds: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, pd.Series]:
@@ -460,8 +539,9 @@ class GDEOptimizer:
         :param bounds: Optional bounds for the optimization (default: inferred from data)
         :returns: tuple of (acquisition_function_value, next_experiment_parameters)
         """
+        
         self.update_data(new_data)
-
+        
         if self.model == "LLM":
             attempt = 0
             self.raw_messages = []  # Reset message history for this step
@@ -508,19 +588,9 @@ class GDEOptimizer:
 
         try:
             predictor, stats = self.get_predictor()
-        except torch._C._LinAlgError:
-            print(
-                "LinAlgError during ensemble training. System may be underdetermined. Returning a random candidate."
-            )
-            x_candidate = (
-                torch.randn(len(self.input_labels))
-                * (raw_bounds[1, :] - raw_bounds[0, :])
-                + raw_bounds[0, :]
-            )
-
-            return torch.nan, pd.Series(
-                x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
-            )
+        except torch._C._LinAlgError as error:
+            self._check_underdetermined_fallback(error)
+            return None, self._random_candidate(raw_bounds)
         except RuntimeError as e:
             # Handle gpytorch ExactGP runtime error when model is called with inputs
             # that don't exactly match the stored training inputs (raised in debug mode).
@@ -529,21 +599,12 @@ class GDEOptimizer:
                 "You must train on the training inputs" in msg
                 or "train_inputs cannot be None" in msg
             ):
-                print(
-                    "RuntimeError during GP training (likely mismatched training inputs). Treating as underdetermined and returning a random candidate."
-                )
-                x_candidate = (
-                    torch.randn(len(self.input_labels))
-                    * (raw_bounds[1, :] - raw_bounds[0, :])
-                    + raw_bounds[0, :]
-                )
-                return torch.nan, pd.Series(
-                    x_candidate.detach().cpu().numpy().flatten(),
-                    index=self.input_labels,
-                )
+                self._check_underdetermined_fallback(e)
+                return None, self._random_candidate(raw_bounds)
             else:
                 # Unknown runtime error: re-raise so we don't silently swallow unrelated failures
                 raise
+        self.predictor = predictor
 
         AF = self._get_acquisition_function(predictor)
 
@@ -558,8 +619,8 @@ class GDEOptimizer:
         # print(f"[step] optimizing target column index (target_idx): {target_idx} for quantity '{self.quantity}'")
 
         means, stds = (
-            torch.tensor(self._means[self.input_labels].values), # Will be 0 if not normalized
-            torch.tensor(self._stds[self.input_labels].values), # Will be 1 if not normalized
+            torch.tensor(self._means[self.input_labels].to_numpy().copy()), # Will be 0 if not normalized
+            torch.tensor(self._stds[self.input_labels].to_numpy().copy()), # Will be 1 if not normalized
         )  # feature-only stats
 
         bounds_norm = (raw_bounds - means) / stds
@@ -568,22 +629,7 @@ class GDEOptimizer:
         opt_bounds = bounds_norm.float()
 
         def AF_q(x):
-            vals = AF(x)
-            # vals can be:
-            #  - 1D: (batch,) already scalar per point
-            #  - 2D: (batch, m) for m outputs
-            if vals.dim() == 1:
-                return vals
-            if vals.dim() == 2:
-                if vals.size(1) == 1:
-                    return vals.squeeze(1)
-                if target_idx >= vals.size(1):
-                    raise RuntimeError(
-                        f"Acquisition returned {vals.size(1)} outputs but target_idx={target_idx}"
-                    )
-                return vals[:, target_idx]
-            # Fallback: flatten all but batch dim and take first column
-            return vals.view(vals.shape[0], -1)[:, 0]
+            return self._select_acquisition_target(AF(x), target_idx)
 
         next_experiment, _ = optimize_acqf(
             acq_function=AF_q,
@@ -606,6 +652,36 @@ class GDEOptimizer:
 
         return ei_val, pd.Series(
             x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
+        )
+
+    def predict(self, x: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Evaluate the cached predictor (from the last step()/step_within_data() call).
+
+        :param x: DataFrame of input feature rows in raw (unnormalized) scale, columns matching self.input_labels
+        :returns: (mean, std) DataFrames with columns self.output_labels, one row per row of x
+        """
+
+        if not isinstance(x, pd.DataFrame):
+            # This makes sure X will always be of size (batch, features) otherwise the squeeze below will fail.
+            raise TypeError("Input x must be a pandas DataFrame.")
+        
+        if self.predictor is None:
+            raise RuntimeError("No predictor available yet; call step() or step_within_data() first.")
+
+        X, _ = self._get_data_tensors(data=x)
+
+        posterior = self.predictor.posterior(X)
+        pred_mean = posterior.mean.squeeze(1).detach().numpy()
+        pred_std = posterior.variance.sqrt().squeeze(1).detach().numpy()
+            
+        output_means = self._means[self.output_labels].to_numpy(dtype=float)
+        output_stds = self._stds[self.output_labels].to_numpy(dtype=float)
+        pred_mean = pred_mean * output_stds + output_means
+        pred_std = pred_std * output_stds
+        return (
+            pd.DataFrame(pred_mean, columns=self.output_labels, index=x.index),
+            pd.DataFrame(pred_std, columns=self.output_labels, index=x.index),
         )
 
     def step_within_data(
@@ -670,11 +746,10 @@ class GDEOptimizer:
 
         try:
             predictor, stats = self.get_predictor()
-        except torch._C._LinAlgError:
-            print(
-                "LinAlgError during ensemble training. System may be underdetermined."
-            )
-            return torch.nan, torch.randint(len(possible_data) - 1, (1,)).squeeze(), {}
+        except torch._C._LinAlgError as error:
+            self._check_underdetermined_fallback(error)
+            random_idx = torch.randint(len(possible_data) - 1, (1,)).squeeze()
+            return (torch.nan, random_idx, {}) if return_metrics else (torch.nan, random_idx)
         except RuntimeError as e:
             msg = str(e)
             if (
@@ -682,20 +757,13 @@ class GDEOptimizer:
                 or "train_inputs cannot be None" in msg
                 or "cholesky_cpu" in msg
             ):
-                print("RuntimeError during GP training. Treating as underdetermined.")
-                if return_metrics:
-                    return (
-                        torch.nan,
-                        torch.randint(len(possible_data) - 1, (1,)).squeeze(),
-                        {},
-                    )
-                else:
-                    return (
-                        torch.nan,
-                        torch.randint(len(possible_data) - 1, (1,)).squeeze()
-                    )
+                self._check_underdetermined_fallback(e)
+                random_idx = torch.randint(len(possible_data) - 1, (1,)).squeeze()
+                return (torch.nan, random_idx, {}) if return_metrics else (torch.nan, random_idx)
             else:
                 raise
+
+        self.predictor = predictor
 
         X, _ = self._get_data_tensors(data=possible_data)
 
@@ -705,7 +773,7 @@ class GDEOptimizer:
             warnings.filterwarnings("ignore", message="Output shape checks failed!")
             scores = AF(X.unsqueeze(1))
 
-        if isinstance(scores, torch.Tensor) and scores.dim() == 1:
+        if isinstance(scores, torch.Tensor) and scores.dim() == 1 and scores.shape[0] != len(possible_data):
             scores = scores.unsqueeze(0)
 
         self.i += 1
@@ -713,11 +781,14 @@ class GDEOptimizer:
         target_idx = self.output_labels.index(self.quantity)
 
         if isinstance(scores, torch.Tensor):
-            if scores.shape[1] <= target_idx:
-                raise RuntimeError(
-                    f"AF scores shape {tuple(scores.shape)} has no column {target_idx}"
-                )
-            target_scores = scores[:, target_idx]
+            if scores.dim() == 1:
+                target_scores = scores  # already one score per candidate
+            else:
+                if scores.shape[1] <= target_idx:
+                    raise RuntimeError(
+                        f"AF scores shape {tuple(scores.shape)} has no column {target_idx}"
+                    )
+                target_scores = scores[:, target_idx]
         else:
             raise RuntimeError("AF returned non-tensor scores, expected torch.Tensor")
         print(f"Target scores : {target_scores.tolist()}")

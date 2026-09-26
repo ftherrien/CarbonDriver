@@ -10,7 +10,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from carbondriver import GDEOptimizer
-from carbondriver.loaders import load_gas_data, load_bicarb_data
+from carbondriver.loaders import load_gas_data, load_bicarb_data, load_campaign_data
 from typing import Tuple, Optional, Literal
 import torch
 import yaml
@@ -92,7 +92,7 @@ def choose_base_inds_numpy(y: np.ndarray, num_choose: int, how: Literal['max','m
     rng = np.random.default_rng(seed)
     return rng.choice(ind, size=num_choose, replace=False, p=p)
 
-def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
+def run_active_learning_experiment(model_name: str, run_idx: int, config: dict, init_triplets: Optional[list] = None):
     """Run a single active learning experiment for the given model."""
     
     print(f"  [Step 1/3] Preparing data for {model_name} run {run_idx}...")
@@ -108,7 +108,7 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
     acquisition = config.get("acquisition", "EI")
     gde = GDEOptimizer(
         model_name=model_name,
-        aquisition=acquisition,
+        acquisition=acquisition,
         quantity=config["property_name"],
         maximize=True,
         output_dir=str(run_dir),
@@ -119,12 +119,15 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict):
     
     # Choose initial triplets
     print(f"  [Step 3/3] Selecting initial triplets...")
-    chosen_triplets_ids = choose_base_inds_numpy(
-        df_triplet_means[config["property_name"]].values,
-        num_choose=3,
-        strategy='uniform',
-        seed=run_idx
-    ).tolist()
+    if init_triplets is None:
+        chosen_triplets_ids = choose_base_inds_numpy(
+            df_triplet_means[config["property_name"]].values,
+            num_choose=3,
+            strategy='uniform',
+            seed=run_idx
+        ).tolist()
+    else:
+        chosen_triplets_ids = init_triplets.copy()
 
     bests = df_triplet_means.loc[chosen_triplets_ids][config["property_name"]].cummax().tolist()
     print(f"    Starting triplets: {chosen_triplets_ids}")
@@ -297,11 +300,21 @@ if __name__ == '__main__':
         elif dataset == "gas":
             df, _cd = load_gas_data(file=data_file)
             output_labels = ["FE (Eth)", "FE (CO)"]
+        elif dataset == "campaign":
+            df, init_triplets = load_campaign_data(file=data_file)
+            output_labels = ["FE CO"]
+            if base_config.get("initial_triplets", None) is None:
+                init_triplets = None
+            elif base_config.get("initial_triplets") != "init":
+                init_triplets = base_config.get("initial_triplets")
+            print("Triplet original order", df)
         else:
             raise ValueError(f"Unknown dataset: {dataset}")
+
         exclude_cols = {"triplet"} | set(output_labels)
         input_labels = [c for c in df.columns if c not in exclude_cols and df[c].nunique() > 1]
         df = df[df.loc[:, output_labels].notna().all(axis=1)]
+        
         df_triplet_means = df.groupby('triplet').mean()
         best_id = int(df_triplet_means[base_config["property_name"]].idxmax())
         print(f"  Loaded {len(df)} data points  |  inputs: {input_labels}")
@@ -332,7 +345,7 @@ if __name__ == '__main__':
                 for i, run_idx in enumerate(run_indices):
                     print(f"\n  RUN {i+1}/{len(run_indices)}: {model.upper()} (seed {run_idx})")
                     try:
-                        run_active_learning_experiment(model, run_idx, config)
+                        run_active_learning_experiment(model, run_idx, config, init_triplets)
                     except Exception as e:
                         print(f"    ✗ Run {run_idx} failed with error: {e}")
                 print(f"\n  ✓ All runs done for {config['run_name']}")

@@ -9,6 +9,14 @@ from pandas import Series
 
 SPECIAL_FEATURES = ["zero_eps_thickness", "current_density"]
 
+# Names and order of the two physics quantities PhModel always computes internally.
+MODELED_QUANTITIES = {
+    "FE (Eth)": "fe_c2h4",
+    "FE (CO)": "fe_co", 
+    "FE_CO": "fe_co",
+    "FE CO": "fe_co",
+    "CO2 utilization": "co2_utilization"}
+
 class PhModel(torch.nn.Module):
     """
     Model for predicting the Faradaic efficiency of CO and C2H4 on a catalyst.
@@ -38,6 +46,7 @@ class PhModel(torch.nn.Module):
         system_phase: Literal["gas", "liquid"] = "gas",
         means: Series = Series(),
         stds: Series = Series(),
+        output_labels: List[str] = ["FE (Eth)", "FE (CO)"]
     ) -> None:
         """
         :param dropout: dropout probability
@@ -49,10 +58,19 @@ class PhModel(torch.nn.Module):
         :param system_phase: phase of the electrochemical system ('gas' or 'liquid')
         :param means: pandas Series of feature means for denormalization (index should match the order of the input features)
         :param stds: pandas Series of feature stds for denormalization (index should match the order of the input features)
+        :param output_labels: subset/order of the two physics quantities to return (default: both, in PHYSICS_OUTPUTS order)
         """
         super().__init__()
         if n_inputs < 1:
             raise ValueError("n_inputs must be >= 1")
+
+        if output_labels is None:
+            raise ValueError(f"output_labels among {list(MODELED_QUANTITIES.keys())} must be provided")
+        else:
+            unknown = [label for label in output_labels if label not in MODELED_QUANTITIES]
+            if unknown:
+                raise ValueError(f"output_labels {unknown} are not among physics outputs {list(MODELED_QUANTITIES.keys())}")
+            self.output_labels = output_labels
 
         if system_phase == "gas":
             self.t_CO2_fixed = 0
@@ -126,7 +144,7 @@ class PhModel(torch.nn.Module):
         Predict Faradaic efficiency for given experimental parameters.
 
         :param x: input features of shape (batch, n_inputs)
-        :returns: predicted FE values of shape (batch, 2). Gas: [FE(C2H4), FE(CO)], Liquid/Bicarb: [FE(CO), CO2 utilization]
+        :returns: predicted FE values of shape (batch, len(output_labels)). Physics outputs, in order, per PHYSICS_OUTPUTS
         """
         if x.shape[-1] != self.n_inputs:
             raise ValueError(
@@ -183,11 +201,7 @@ class PhModel(torch.nn.Module):
             t_CO2=t_CO2,
         )
 
-        if self.config.get("dataset") == "bicarb":
-            out = torch.cat([solution["fe_co"], solution["co2_utilization"]], dim=-1)
-        else:
-            out = torch.cat([solution["fe_c2h4"], solution["fe_co"]], dim=-1)
-        return out
+        return torch.cat([solution[MODELED_QUANTITIES[label]] for label in self.output_labels], dim=-1)
 
 
 class MLPModel(torch.nn.Module):
@@ -244,6 +258,7 @@ class EnsPredictor(EnsembleModel):
             X_in = X.view(-1, X.shape[-1])
 
         model_output = self.model_input(X_in)
+        
         # Handle different output dimensions
         if model_output.dim() == 3:
             # Output is [ensemble, batch, features] -> [batch, ensemble, features]
@@ -292,13 +307,14 @@ class MultitaskGPModel(gpytorch.models.ExactGP):
         :param likelihood: GPyTorch likelihood
         """
         super(MultitaskGPModel, self).__init__(train_x, train_y, likelihood)
+        num_tasks = train_y.shape[-1] if train_y.ndim > 1 else 1
         self.mean_module = gpytorch.means.MultitaskMean(
-            gpytorch.means.ConstantMean(), num_tasks=2
+            gpytorch.means.ConstantMean(), num_tasks=num_tasks
         )
         self.covar_module = gpytorch.kernels.MultitaskKernel(
-            gpytorch.kernels.RBFKernel(), num_tasks=2, rank=1
+            gpytorch.kernels.RBFKernel(), num_tasks=num_tasks, rank=1
         )
-        self.num_outputs = 2
+        self.num_outputs = num_tasks
 
     def forward(
         self, x: torch.Tensor
@@ -347,9 +363,9 @@ class MyMean(gpytorch.means.Mean):
         Evaluate mean function.
 
         :param x: input tensor
-        :returns: mean function output squeezed to 1D
+        :returns: mean function output, one column per physics objective
         """
-        return self.model(x).squeeze()
+        return self.model(x)
 
 
 class MultitaskGPhysModel(gpytorch.models.ExactGP):
@@ -365,15 +381,16 @@ class MultitaskGPhysModel(gpytorch.models.ExactGP):
     ) -> None:
         """
         :param train_x: training inputs of shape (n, d)
-        :param train_y: training targets of shape (n, 2)
+        :param train_y: training targets of shape (n, num_tasks)
         :param likelihood: GPyTorch likelihood
         :param model: optional physics-informed model for mean function
         :param freeze_model: whether to freeze model parameters
         """
         super(MultitaskGPhysModel, self).__init__(train_x, train_y, likelihood)
         self.mean_module = MyMean(model=model, freeze_model=freeze_model)
+        num_tasks = train_y.shape[-1] if train_y.ndim > 1 else 1
         self.covar_module = gpytorch.kernels.MultitaskKernel(
-            gpytorch.kernels.RBFKernel(), num_tasks=2, rank=1
+            gpytorch.kernels.RBFKernel(), num_tasks=num_tasks, rank=1
         )
 
     def forward(

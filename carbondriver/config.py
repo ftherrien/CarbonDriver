@@ -6,8 +6,7 @@ default_config = {
     "normalize_outputs": False,
     "EI_reference": "max",
     "UCB_beta": 1.0,
-    "system_phase": None,
-    "dataset": "gas",
+    "system_phase": "gas",
     "property_name": "FE (Eth)",
     "data_file": None,
     "acquisition": "EI",
@@ -16,9 +15,11 @@ default_config = {
     "current_density": None,
     "zero_eps_thickness": None,
     "t_CO2": None,
+    "torch_seed": None,  # seed torch before fitting PhModel/GP+Ph, for reproducibility
+    "propose_random_when_underdetermined": True,
     # LLM-based active learning settings (used when model_name="LLM")
-    "llm_api": "gemini",          # "gemini", "openai", or "claude"
-    "llm_model": "gemini-3.5-flash",
+    "llm_api": "claude",          # "gemini" (not yet supported), "openai", or "claude"
+    "llm_model": "claude-haiku-4-5-20251001",
     "llm_api_key": None,
     "llm_experiment_context": (
         "You are an expert scientist helping to optimize an experiment. "
