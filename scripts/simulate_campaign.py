@@ -9,7 +9,7 @@ import pandas as pd
 
 INPUT_LABELS = ["Hotplate temperature (catalyst)", "Ink mass"]
 
-BOUNDS = torch.tensor([[40, 25], [150, 90]], dtype=torch.float32)
+BOUNDS = torch.tensor([[30, 20], [150, 100]], dtype=torch.float32)
 
 eps = 1e-3  # small value to avoid extrapolation in the corners
 
@@ -60,9 +60,11 @@ if __name__ == "__main__":
     plt.legend()
     plt.colorbar()
     plt.axis("equal")
-    # plt.show()
+    plt.show()
 
     # Simulated campaign
+
+    # df, init_triplets = load_campaign_data("simulated_campaign_results.xlsx", convert_to_zlt = False) # TMP
     
     data = df[df["triplet"].isin(init_triplets)]
     starting_df = converter(data.copy(), "to_zlt")
@@ -79,7 +81,7 @@ if __name__ == "__main__":
     with open("config_fixed_current_liquid.yaml", "r") as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
          
-    gde = GDEOptimizer("GP+Ph", acquisition="UCB", config=config, output_dir="./sim_campaign", input_labels=["Hotplate temperature (catalyst)", "zero_eps_thickness"], bounds=zlt_bounds, quantity="FE CO", output_labels=["FE CO"])
+    gde = GDEOptimizer("Ph", acquisition="UCB", config=config, output_dir="./sim_campaign", input_labels=["Hotplate temperature (catalyst)", "zero_eps_thickness"], bounds=zlt_bounds, quantity="FE CO", output_labels=["FE CO"])
 
     new_data = starting_df.copy()
 

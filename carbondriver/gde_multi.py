@@ -854,7 +854,7 @@ class System(torch.nn.Module):
             phi, eps, r, L, thetas, gdl_mass_transfer_coeff, i_target=(i_target if self.constant_J_in else None), t_CO2=t_CO2
         )  # monotonically increasing
 
-        I = solution["current_density"].detach()
+        I = solution["current_density"]
         I = torch.where(torch.isnan(I) | torch.isinf(I),
                         torch.zeros_like(I), I)
 
