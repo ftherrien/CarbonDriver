@@ -28,4 +28,6 @@ default_config = {
     "llm_max_tokens": 1024,
     "llm_max_attempts": 3,
     "similarity_tolerance": 1e-5,
+    "num_restarts": 10,
+    "raw_samples": 30,
 }

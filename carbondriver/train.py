@@ -90,16 +90,16 @@ def train_model_ens(
     :param plot: whether to plot diagnostics
     :returns: tuple of (stats_df, ensemble_predictor)
     """
+    
     DNAME = Path(DNAME)
     DNAME.mkdir(exist_ok=True)
+    n_dims = y_train.shape[-1]
     if plot:
-        fig, ax = plt.subplots(ncols=3, figsize=(10, 3))
-        ax[1].axline((0, 0), slope=1, c="k", ls="--")
-        ax[2].axline((0, 0), slope=1, c="k", ls="--")
-        # Clarify what each subplot shows: NLL and parity plots for the two FE targets
+        fig, ax = plt.subplots(ncols=1 + n_dims, figsize=(3 * (1 + n_dims), 3))
         ax[0].set_title("NLL (per-dimension) — lower is better")
-        ax[1].set_title("Parity plot: FE (C2H5OH, Ethanol)")
-        ax[2].set_title("Parity plot: FE (CO, Carbon monoxide)")
+        for j in range(n_dims):
+            ax[1 + j].axline((0, 0), slope=1, c="k", ls="--")
+            ax[1 + j].set_title(f"Parity plot: dim {j}")
 
     # set up model and optimizer
     num_models = 50
@@ -177,41 +177,22 @@ def train_model_ens(
         )
 
     if plot:
-        # plot parity plots with confidence intervals
-        ax[1].errorbar(
-            y_train[:, 0].numpy(),
-            mean_train[:, 0].numpy(),
-            yerr=std_train[:, 0].numpy(),
-            fmt="o",
-            alpha=0.5,
-            mfc=f"C0",
-            mec="white",
-        )
-        ax[2].errorbar(
-            y_train[:, 1].numpy(),
-            mean_train[:, 1].numpy(),
-            yerr=std_train[:, 1].numpy(),
-            fmt="o",
-            alpha=0.5,
-            mfc=f"C0",
-            mec="white",
-        )
-        fig.tight_layout()
-        # Add axis labels and more descriptive titles
-
+        # parity plots with confidence intervals, one panel per output dimension
+        for j in range(n_dims):
+            ax[1 + j].errorbar(
+                y_train[:, j].numpy(),
+                mean_train[:, j].numpy(),
+                yerr=std_train[:, j].numpy(),
+                fmt="o",
+                alpha=0.5,
+                mfc="C0",
+                mec="white",
+            )
+            ax[1 + j].set_xlabel(f"true dim {j}")
+            ax[1 + j].set_ylabel(f"predicted mean dim {j}")
         ax[0].set_xlabel("iteration")
         ax[0].set_ylabel("NLL (per-dimension)")
-        ax[1].set_xlabel("true FE (C2H5OH)")
-        ax[1].set_ylabel("predicted mean FE (C2H5OH)")
-        ax[2].set_xlabel("true FE (CO)")
-        ax[2].set_ylabel("predicted mean FE (CO)")
-        # Ensure titles/labels render across backends: set again just before draw with padding
-        ax[0].set_title(ax[0].get_title(), fontsize=11, pad=8, weight="semibold")
-        ax[1].set_title(ax[1].get_title(), fontsize=11, pad=8, weight="semibold")
-        ax[2].set_title(ax[2].get_title(), fontsize=11, pad=8, weight="semibold")
-        # Add a small figure-level suptitle to clarify what the panels represent
         fig.suptitle("Training diagnostics (NLL and parity plots)", fontsize=12, y=0.98)
-        # reserve space so titles/suptitle are not clipped
         fig.tight_layout(rect=[0, 0.03, 1, 0.95])
 
         plt.show()
@@ -250,12 +231,13 @@ def train_GP_model(
     """
     DNAME = Path(DNAME)
     DNAME.mkdir(exist_ok=True, parents=True)
+    n_dims = y_train.shape[-1] if y_train.ndim > 1 else 1
     if plot:
-        fig, ax = plt.subplots(ncols=3, figsize=(10, 3))
-        ax[1].axline((0, 0), slope=1, c="k", ls="--")
-        ax[2].axline((0, 0), slope=1, c="k", ls="--")
+        fig, ax = plt.subplots(ncols=1 + n_dims, figsize=(3 * (1 + n_dims), 3))
+        for j in range(n_dims):
+            ax[1 + j].axline((0, 0), slope=1, c="k", ls="--")
 
-    num_tasks = y_train.shape[-1] if y_train.ndim > 1 else 1
+    num_tasks = n_dims
     likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=num_tasks)
     model = MultitaskGPModel(X_train, y_train, likelihood)
     # Use the adam optimizer
@@ -303,44 +285,25 @@ def train_GP_model(
             y="loss", c="C0", ls="--", lw=0.7, alpha=0.5, ax=ax[0]
         )
 
-        # plot parity plots with confidence intervals
-        ax[1].errorbar(
-            y_train[:, 0].numpy(),
-            mean_train[:, 0].numpy(),
-            yerr=std_train[:, 0].numpy(),
-            fmt="o",
-            alpha=0.5,
-            mfc=f"C{i}",
-            mec="white",
-        )
-        ax[2].errorbar(
-            y_train[:, 1].numpy(),
-            mean_train[:, 1].numpy(),
-            yerr=std_train[:, 1].numpy(),
-            fmt="o",
-            alpha=0.5,
-            mfc=f"C{i}",
-            mec="white",
-        )
+        # parity plots with confidence intervals, one panel per output dimension
+        for j in range(n_dims):
+            ax[1 + j].errorbar(
+                y_train[:, j].numpy(),
+                mean_train[:, j].numpy(),
+                yerr=std_train[:, j].numpy(),
+                fmt="o",
+                alpha=0.5,
+                mfc=f"C{i}",
+                mec="white",
+            )
+            ax[1 + j].set_title(f"Parity plot: dim {j}")
+            ax[1 + j].set_xlabel(f"true dim {j}")
+            ax[1 + j].set_ylabel(f"predicted mean dim {j}")
+        ax[0].set_title("Loss (train) over iterations")
+        ax[0].set_xlabel("iteration")
+        ax[0].set_ylabel("negative marginal log likelihood")
+        fig.suptitle("GP training diagnostics (loss and parity)", fontsize=12, y=0.98)
         fig.tight_layout(rect=[0, 0.03, 1, 0.95])
-        # Add axis labels and titles for clarity
-        """
-        ax[0].set_title('Loss (train) over iterations')
-        ax[0].set_xlabel('iteration')
-        ax[0].set_ylabel('negative marginal log likelihood')
-        ax[1].set_title('Parity plot: FE (C2H5OH, Ethanol)')
-        ax[1].set_xlabel('true FE (C2H5OH, Ethanol)')
-        ax[1].set_ylabel('predicted mean FE (C2H5OH, Ethanol)')
-        ax[2].set_title('Parity plot: FE (CO)')
-        ax[2].set_xlabel('true FE (CO)')
-        ax[2].set_ylabel('predicted mean FE (CO)')
-        # Force title draw and short pause for some interactive backends, with padding
-        ax[0].set_title(ax[0].get_title(), fontsize=11, pad=8, weight='semibold')
-        ax[1].set_title(ax[1].get_title(), fontsize=11, pad=8, weight='semibold')
-        ax[2].set_title(ax[2].get_title(), fontsize=11, pad=8, weight='semibold')
-        fig.suptitle('GP training diagnostics (loss and parity)', fontsize=12, y=0.98)
-        # reserve space so titles/suptitle are not clipped
-        """
         plt.show()
 
     # save average losses to file

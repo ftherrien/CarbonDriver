@@ -529,6 +529,67 @@ class GDEOptimizer:
         scores = self._select_acquisition_target(vals, target_idx)
         return pd.DataFrame({"acquisition": scores.detach().cpu().numpy()}, index=x.index)
 
+    def _plot_2d_debug(
+        self,
+        predictor,
+        AF_q,
+        raw_bounds: torch.Tensor,
+        candidate: pd.Series,
+        possible_data: Optional[pd.DataFrame] = None,
+        n: int = 20,
+    ) -> None:
+        """
+        Debug-only visualization for 2D input spaces: pcolormesh of the acquisition
+        function, posterior mean and posterior std over the input grid, overlaid with
+        observed data (self.df), candidate points (possible_data) and the chosen
+        next experiment.
+        """
+        import matplotlib.pyplot as plt
+
+        target_idx = self.output_labels.index(self.quantity)
+        means = torch.tensor(self._means[self.input_labels].to_numpy())
+        stds = torch.tensor(self._stds[self.input_labels].to_numpy())
+
+        x0 = torch.linspace(raw_bounds[0, 0], raw_bounds[1, 0], n)
+        x1 = torch.linspace(raw_bounds[0, 1], raw_bounds[1, 1], n)
+        xx, yy = torch.meshgrid(x0, x1, indexing="ij")
+        grid = torch.stack([xx.flatten(), yy.flatten()], dim=-1)
+        grid_norm = ((grid - means) / stds).float().unsqueeze(1)
+        grid_norm.requires_grad_(True)
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Output shape checks failed!")
+            af = AF_q(grid_norm)
+        af.sum().backward()
+        grad = grid_norm.grad.squeeze(1).reshape(n, n, -1)
+        af = af.detach().reshape(n, n)
+
+        posterior = predictor.posterior(grid_norm.detach())
+        mean = posterior.mean.view(n**2,-1)[:, target_idx].detach().reshape(n, n)
+        std = posterior.variance.sqrt().view(n**2,-1)[:, target_idx].detach().reshape(n, n)
+
+        fig, ax = plt.subplots(ncols=3, figsize=(15, 4))
+        for a, z, title in zip(ax, [af, mean, std], ["Acquisition", "Mean", "Std"]):
+            pc = a.pcolormesh(xx, yy, z, shading="auto")
+            fig.colorbar(pc, ax=a)
+            a.contour(xx, yy, z, levels = n, colors="k", linewidths=0.5, alpha=0.6)
+            a.scatter(*self.df[self.input_labels].to_numpy().T, c="k", marker="o", label="observed")
+            if possible_data is not None:
+                a.scatter(*possible_data[self.input_labels].to_numpy().T, c="w", marker="x", label="candidates")
+            a.scatter(*candidate[self.input_labels], c="r", marker="*", s=200, label="next experiment")
+            a.set_title(title)
+            a.set_xlabel(self.input_labels[0])
+            a.set_ylabel(self.input_labels[1])
+        step = max(n // 15, 1)
+        ax[0].quiver(
+            xx[::step, ::step], yy[::step, ::step],
+            grad[::step, ::step, 0], grad[::step, ::step, 1],
+            color="r",
+        )
+        ax[0].legend()
+        fig.tight_layout()
+        plt.show()
+
     def step(
         self, new_data: pd.DataFrame, bounds: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, pd.Series]:
@@ -630,13 +691,13 @@ class GDEOptimizer:
 
         def AF_q(x):
             return self._select_acquisition_target(AF(x), target_idx)
-
+        
         next_experiment, _ = optimize_acqf(
             acq_function=AF_q,
             bounds=opt_bounds,
             q=1,
-            num_restarts=20,
-            raw_samples=30,
+            num_restarts=self.config.get("num_restarts", 100),
+            raw_samples=self.config.get("raw_samples", 1000),
             options={},
         )
         
@@ -650,9 +711,14 @@ class GDEOptimizer:
             warnings.filterwarnings("ignore", message="Output shape checks failed!")
             ei_val = AF_q(next_experiment)
 
-        return ei_val, pd.Series(
+        candidate = pd.Series(
             x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
         )
+
+        if self.config["make_plots"] and len(self.input_labels) == 2:
+            self._plot_2d_debug(predictor, AF_q, raw_bounds, candidate)
+
+        return ei_val, candidate
 
     def predict(self, x: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
@@ -791,10 +857,19 @@ class GDEOptimizer:
                 target_scores = scores[:, target_idx]
         else:
             raise RuntimeError("AF returned non-tensor scores, expected torch.Tensor")
-        print(f"Target scores : {target_scores.tolist()}")
+        print(f"Target scores :")
+        ts = possible_data.copy()
+        ts["AF Score"] = target_scores.tolist()
+        print(ts)
         best_idx = int(target_scores.argmax().item())
         best_df_index = possible_data.iloc[best_idx].name
         best_ei = float(target_scores[best_idx].item())
+
+        if self.config["make_plots"] and len(self.input_labels) == 2:
+            all_points = pd.concat([self.df[self.input_labels], possible_data[self.input_labels]])
+            raw_bounds = torch.tensor([all_points.min().to_list(), all_points.max().to_list()], dtype=torch.float32)
+            AF_q = lambda x: self._select_acquisition_target(AF(x), target_idx)
+            self._plot_2d_debug(predictor, AF_q, raw_bounds, possible_data.loc[best_df_index], possible_data)
 
         # Extract final training metrics from stats
         metrics = {}
