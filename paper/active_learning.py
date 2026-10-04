@@ -35,7 +35,7 @@ col_i = 0
 
 # ## MLP ensemble
 
-gde = GDEOptimizer(model_name="GP+Ph", aquisition="EI", quantity="FE (Eth)", maximize=True, output_dir="./out")
+gde = GDEOptimizer(model_name="GP+Ph", acquisition="EI", quantity="FE (Eth)", maximize=True, output_dir="./out")
 
 for d in range(NUM_RUNS):
     DNAME = Path(f'./MLP_F/MLP_F{d}')

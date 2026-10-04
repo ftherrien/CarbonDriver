@@ -5,7 +5,6 @@ from functools import cached_property
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 import scipy.optimize as opt
 import torch
 import torch.nn.functional
@@ -152,6 +151,8 @@ class System(torch.nn.Module):
         self.c_khco3 = c_khco3
         self.c_k = c_k
         self.dic = dic
+        if system_phase not in ["gas", "liquid"]:
+            raise ValueError("system_phase must be 'gas' or 'liquid'")
         self.system_phase = system_phase
         self.extra_sink = extra_sink
         self.constant_J_in = constant_J_in
@@ -853,7 +854,7 @@ class System(torch.nn.Module):
             phi, eps, r, L, thetas, gdl_mass_transfer_coeff, i_target=(i_target if self.constant_J_in else None), t_CO2=t_CO2
         )  # monotonically increasing
 
-        I = solution["current_density"].detach()
+        I = solution["current_density"]
         I = torch.where(torch.isnan(I) | torch.isinf(I),
                         torch.zeros_like(I), I)
 
