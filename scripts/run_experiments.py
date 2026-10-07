@@ -147,10 +147,16 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict, 
     iteration = 0
     
     print(f"\n  Starting active learning loop with {len(withheld_df)} candidates...")
-    while len(withheld_df) > 0 and best_id not in chosen_triplets_ids:
+    while len(withheld_df) > 0 and ((best_id not in chosen_triplets_ids) or config.get("verify_order", False)):
         print(f"  Run {run_idx}, Iteration {iteration}: Evaluating acquisition function...")
         # Evaluate acquisition function
         best_ei, best_triplet, metrics = gde.step_within_data(train_df, withheld_df, return_metrics=True)
+
+        if config.get("verify_order", False):
+            # This should only be used when checking a campaign that used the exact same params as this gde object
+            assert best_triplet == withheld_df.iloc[0].name, f"Triplet order was not preserved"
+            print(f"    ✓ Verified triplet order: {best_triplet} is the first in withheld_df")
+        
         best_triplet = withheld_df.loc[best_triplet]
         #This line ensures that we append the new triplet data to train_df, not replacing it
         train_df = df[df['triplet'] == best_triplet.name]
