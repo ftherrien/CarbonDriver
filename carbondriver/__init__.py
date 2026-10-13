@@ -241,6 +241,7 @@ class GDEOptimizer:
                 DNAME=self.output_dir,
                 i=self.i,
                 plot=self.config["make_plots"],
+                ph_frac=self.config.get("ph_frac", 0.5)
             )
 
         # Handle ensemble models (MLP and Ph)
