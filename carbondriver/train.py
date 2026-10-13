@@ -77,6 +77,8 @@ def train_model_ens(
     i: int,
     progress: bool = False,
     plot: bool = False,
+    num_models: int = 50,
+    batch_fraction: float = 0.5,
 ) -> Tuple[pd.DataFrame, EnsPredictor]:
     """Train 50-model ensemble with per-model bagging and variance scaling.
 
@@ -88,6 +90,8 @@ def train_model_ens(
     :param i: iteration index for file naming
     :param progress: whether to show progress bar
     :param plot: whether to plot diagnostics
+    :param num_models: Number of models in the ensemble
+    :param batch_fraction: Fraction of training data to use for each model
     :returns: tuple of (stats_df, ensemble_predictor)
     """
     
@@ -102,7 +106,6 @@ def train_model_ens(
             ax[1 + j].set_title(f"Parity plot: dim {j}")
 
     # set up model and optimizer
-    num_models = 50
     model = [model_constructor() for _ in range(num_models)]
 
     params, buffers = stack_module_state(model)
@@ -117,7 +120,7 @@ def train_model_ens(
     variance_optimizer = torch.optim.Adam([variance_scaler], lr=1)
 
     # batch the train data
-    num_data_per_model = ceil(X_train.shape[0] * 0.5)
+    num_data_per_model = ceil(X_train.shape[0] * batch_fraction)
     # inds = torch.stack([torch.arange(num_data_per_model) for _ in range(num_models)], dim=0)
     inds = torch.stack(
         [

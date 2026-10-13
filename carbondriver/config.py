@@ -30,4 +30,7 @@ default_config = {
     "similarity_tolerance": 1e-5,
     "num_restarts": 20,
     "raw_samples": 200,
+    "num_models": 50,
+    "batch_fraction": 0.5,
+    "dropout": 0.1,
 }

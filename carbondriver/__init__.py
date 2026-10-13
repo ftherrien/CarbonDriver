@@ -249,7 +249,7 @@ class GDEOptimizer:
 
                 model_factory = lambda: PhModel(
                     config=self.config,
-                    dropout=0,
+                    dropout=self.config.get("dropout", 0.1),
                     n_inputs=len(self.input_labels),
                     system_phase=system_phase,
                     means=self._means,
@@ -264,7 +264,7 @@ class GDEOptimizer:
                 model_factory = lambda: MLPModel(
                     n_inputs=n_in,
                     n_outputs=n_out,
-                    dropout=0,
+                    dropout=self.config.get("dropout", 0.1),
                 )
 
             stats, model = train_model_ens(
@@ -275,6 +275,8 @@ class GDEOptimizer:
                 i=self.i,
                 num_iter=self.config["num_iter"],
                 plot=self.config["make_plots"],
+                num_models=self.config.get("num_models", 50),
+                batch_fraction=self.config.get("batch_fraction", 0.5)
             )
 
         return model, stats
