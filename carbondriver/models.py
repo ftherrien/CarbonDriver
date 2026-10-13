@@ -1,4 +1,4 @@
-from typing import Tuple, Optional, Dict, Any, Literal
+from typing import Tuple, Optional, Dict, Any, Literal, List
 import torch
 import gpytorch
 from carbondriver import gde_multi
