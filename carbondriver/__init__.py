@@ -176,7 +176,7 @@ class GDEOptimizer:
 
     def update_data(self, new_data: pd.DataFrame | pd.Series) -> None:
         """
-        Add new experimental data to the dataset (and sort by 'triplet' for now).
+        Add new experimental data to the dataset.
 
         :param new_data: New data to add (pd.Series or pd.DataFrame)
         :returns: None. Modifies self.df in-place.
@@ -193,16 +193,13 @@ class GDEOptimizer:
 
         self.df = pd.concat([self.df, new_data], axis=0)
 
-        if "triplet" in self.df.columns:
-            self.df.sort_values(by="triplet", inplace=True)
-
     def get_predictor(self) -> Tuple[torch.nn.Module | BoTorchGP, pd.DataFrame]:
         """
         Train and return the new predictor based on the new data.
 
         :returns: (model, stats) tuple where model is the trained predictor and stats is a DataFrame with training metrics.
         """
-        if self.model in {PhModel, MultitaskGPhysModel} and self.config.get("torch_seed") is not None:
+        if self.config.get("torch_seed") is not None:
             torch.manual_seed(self.config["torch_seed"])
 
         X, y = self._get_data_tensors(update_stats=True)
@@ -252,7 +249,7 @@ class GDEOptimizer:
 
                 model_factory = lambda: PhModel(
                     config=self.config,
-                    dropout=0.0,
+                    dropout=0,
                     n_inputs=len(self.input_labels),
                     system_phase=system_phase,
                     means=self._means,
@@ -267,6 +264,7 @@ class GDEOptimizer:
                 model_factory = lambda: MLPModel(
                     n_inputs=n_in,
                     n_outputs=n_out,
+                    dropout=0,
                 )
 
             stats, model = train_model_ens(
@@ -536,7 +534,7 @@ class GDEOptimizer:
         raw_bounds: torch.Tensor,
         candidate: pd.Series,
         possible_data: Optional[pd.DataFrame] = None,
-        n: int = 20,
+        n: int = 10,
     ) -> None:
         """
         Debug-only visualization for 2D input spaces: pcolormesh of the acquisition
@@ -698,7 +696,7 @@ class GDEOptimizer:
             q=1,
             num_restarts=self.config.get("num_restarts", 100),
             raw_samples=self.config.get("raw_samples", 1000),
-            options={},
+            options={"ftol":1e-12},
         )
         
         # Denormalize the candidate, mean=0 and std=1 if not normalized. 
@@ -717,7 +715,7 @@ class GDEOptimizer:
 
         if self.config["make_plots"] and len(self.input_labels) == 2:
             self._plot_2d_debug(predictor, AF_q, raw_bounds, candidate)
-
+            
         return ei_val, candidate
 
     def predict(self, x: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -839,7 +837,7 @@ class GDEOptimizer:
             warnings.filterwarnings("ignore", message="Output shape checks failed!")
             scores = AF(X.unsqueeze(1))
 
-        if isinstance(scores, torch.Tensor) and scores.dim() == 1 and scores.shape[0] != len(possible_data):
+        if isinstance(scores, torch.Tensor) and (scores.dim() == 0 or (scores.dim() == 1 and scores.shape[0] != len(possible_data))):
             scores = scores.unsqueeze(0)
 
         self.i += 1
@@ -891,7 +889,7 @@ class GDEOptimizer:
                 metrics["loss"] = np.nan
         else:
             metrics["loss"] = np.nan
-
+        
         if return_metrics:
             return best_ei, best_df_index, metrics
         else:

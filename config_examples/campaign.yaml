@@ -2,7 +2,7 @@ data_file: ../simulated_campaign_results.xlsx
 run_name: campaign_tests
 dataset: campaign
 num_runs: 2
-models: ["Ph"]
+models: ["MLP"]
 system_phase: liquid
 property_name: 'FE CO'
 EI_reference: "max"
@@ -16,7 +16,7 @@ constant_J_in: True
 t_CO2: 0.84
 initial_triplets: init
 acquisition: UCB
-UCB_beta: 3.0
-current_density: 200
+UCB_beta: 1.0
+current_density: 100
 make_plots: False
 verify_order: True

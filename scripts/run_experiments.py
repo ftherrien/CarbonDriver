@@ -141,7 +141,7 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict, 
     # Get rows for chosen triplets
     train_df = df[df['triplet'].isin(chosen_triplets_ids)].copy()
     # Get rows for withheld triplets
-    withheld_df = df_triplet_means[~df_triplet_means.index.isin(chosen_triplets_ids)].copy().drop(columns=config["output_labels"])
+    withheld_df = df_triplet_means.loc[[t for t in df["triplet"].unique() if t not in chosen_triplets_ids]].copy().drop(columns=config["output_labels"])
 
     # Active learning loop
     iteration = 0
@@ -154,7 +154,8 @@ def run_active_learning_experiment(model_name: str, run_idx: int, config: dict, 
 
         if config.get("verify_order", False):
             # This should only be used when checking a campaign that used the exact same params as this gde object
-            assert best_triplet == withheld_df.iloc[0].name, f"Triplet order was not preserved"
+            
+            assert best_triplet == withheld_df.iloc[0].name, f"Triplet order was not preserved: expected {withheld_df.iloc[0].name}, got {best_triplet}"
             print(f"    ✓ Verified triplet order: {best_triplet} is the first in withheld_df")
         
         best_triplet = withheld_df.loc[best_triplet]
@@ -354,6 +355,8 @@ if __name__ == '__main__':
                         run_active_learning_experiment(model, run_idx, config, init_triplets)
                     except Exception as e:
                         print(f"    ✗ Run {run_idx} failed with error: {e}")
+                        if config.get("verify_order", False):
+                            raise e
                 print(f"\n  ✓ All runs done for {config['run_name']}")
             else:
                 print("  Using existing results.")

@@ -13,6 +13,8 @@ BOUNDS = torch.tensor([[30, 20], [150, 100]], dtype=torch.float32)
 
 eps = 1e-3  # small value to avoid extrapolation in the corners
 
+DEFAULT_ELECTRODE_AREA_CM2 = 4
+
 def converter(df, direction="to_zlt", electrode_area_cm2: float = DEFAULT_ELECTRODE_AREA_CM2):
 
     area = electrode_area_cm2  # cm^2
@@ -71,7 +73,8 @@ if __name__ == "__main__":
     data["Type"] = "init"
     data = data.drop(columns=["triplet"])
     data["FE CO"] = data["FE CO"] * 100
-    
+
+    data.to_csv("simulated_campaign_start.csv", index=False)
     
     zlt_bounds = torch.tensor(converter(pd.DataFrame(BOUNDS.numpy(), columns=INPUT_LABELS), "to_zlt").to_numpy(), dtype=torch.float32)
 
@@ -81,7 +84,7 @@ if __name__ == "__main__":
     with open("config_fixed_current_liquid.yaml", "r") as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
          
-    gde = GDEOptimizer("Ph", acquisition="UCB", config=config, output_dir="./sim_campaign", input_labels=["Hotplate temperature (catalyst)", "zero_eps_thickness"], bounds=zlt_bounds, quantity="FE CO", output_labels=["FE CO"])
+    gde = GDEOptimizer(config["models"][0], acquisition=config["acquisition"], config=config, output_dir="./sim_campaign", input_labels=["Hotplate temperature (catalyst)", "zero_eps_thickness"], bounds=zlt_bounds, quantity="FE CO", output_labels=["FE CO"])
 
     new_data = starting_df.copy()
 
