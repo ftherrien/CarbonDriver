@@ -463,8 +463,6 @@ class GDEOptimizer:
             raise ValueError(f"Unsupported llm_api '{api}'. Choose 'gemini', 'openai', or 'claude'.")
 
         self.raw_messages.extend([{"role": "user",   "content": user}, {"role": "assistant",   "content": text}])
-
-        print(f"Raw messages:\n{self.raw_messages}\n")
         
         return self._read_response(text)
 
