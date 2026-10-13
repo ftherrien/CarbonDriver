@@ -7,7 +7,7 @@ llm_api: "claude"      # "gemini", "openai", or "claude"
 # llm_model: "gemini-3.5-flash"
 llm_model: "claude-haiku-4-5-20251001"
 # llm_model: "gpt-5.4-mini"
-llm_experiment_context: "You are an expert chemist helping to optimize an experiment. Use your domain knowledge along with the experimental data provided to make informed suggestions. The system is a bicarbonate (liquid) to CO electrlyzer. "
+llm_experiment_context: "You are an expert chemist helping to optimize an experiment. Use your domain knowledge along with the experimental data provided to make informed suggestions. The system is a bicarbonate (liquid) to CO electrolyzer. "
 
 property_name: 'FE_CO'
 

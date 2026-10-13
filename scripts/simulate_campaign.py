@@ -48,7 +48,7 @@ if __name__ == "__main__":
     xy = df_triplet_means[INPUT_LABELS].to_numpy()
     z = df_triplet_means["FE CO"].to_numpy()
 
-    # Addin 0s to the corners of the input space to avoid extrapolation
+    # Adding 0s to the corners of the input space to avoid extrapolation
     corners = np.array(
         [
             [BOUNDS[0, 0] - eps, BOUNDS[0, 1] - eps],
@@ -62,7 +62,7 @@ if __name__ == "__main__":
 
     lab_simulator = LinearNDInterpolator(xy, z)
 
-    # Just ploting the interpolation surface
+    # Just plotting the interpolation surface
     X = np.linspace(BOUNDS[0, 0], BOUNDS[1, 0])
     Y = np.linspace(BOUNDS[0, 1], BOUNDS[1, 1])
 

@@ -27,7 +27,7 @@ class PhModel(torch.nn.Module):
     The model is a neural network that takes in n_inputs
 
     There are two mandatory features:
-       1. zlt, thinkness of perfectly compact catalyst
+       1. zlt, thickness of perfectly compact catalyst
        2. current_target, the current density
 
     These features may be included as part of the n_inputs in which case they will be

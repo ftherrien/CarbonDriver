@@ -660,7 +660,7 @@ class GDEOptimizer:
         """
         Perform a step in the optimization process using the new data and bounds.
 
-        :param new_data: New data to be added to the training set. Do not input data that was alerady given to the object, only new data.
+        :param new_data: New data to be added to the training set. Do not input data that was already given to the object, only new data.
         :param bounds: Optional bounds for the optimization (default: inferred from data)
         :returns: tuple of (acquisition_function_value, next_experiment_parameters)
         """
@@ -843,9 +843,9 @@ class GDEOptimizer:
         return_metrics: bool = False,
     ) -> Tuple[float, int] | Tuple[float, int, dict]:
         """
-        Selects the best next point from a set of candidates (possible_dat) considering the new data (new_data) and the existing data (if any).
+        Selects the best next point from a set of candidates (possible_data) considering the new data (new_data) and the existing data (if any).
 
-        :param new_data: New data to be added to the training set. Do not input data that was alerady given to the object, only new data.
+        :param new_data: New data to be added to the training set. Do not input data that was already given to the object, only new data.
         :param possible_data: DataFrame of candidate points to select from
         :param return_metrics: whether to return training metrics (nll, loss)
         :returns: (best_ei_value, best_index) or (best_ei_value, best_index, metrics) if return_metrics=True

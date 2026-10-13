@@ -1,6 +1,6 @@
 # **Car**bon**Driver**
 
-An api and a collection physics-based uncertainty-aware models to drive automated CO2RR laboratories
+An api and a collection of physics-based uncertainty-aware models to drive automated CO2RR laboratories
 
 See our paper: [A physics-based data-driven model for CO2 gas diffusion electrodes to drive automated laboratories](https://arxiv.org/abs/2502.06323v1)
 
