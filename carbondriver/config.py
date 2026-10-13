@@ -33,4 +33,5 @@ default_config = {
     "num_models": 50,
     "batch_fraction": 0.5,
     "dropout": 0.1,
+    "variance_scaling": True
 }

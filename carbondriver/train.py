@@ -93,6 +93,7 @@ def train_model_ens(
     plot: bool = False,
     num_models: int = 50,
     batch_fraction: float = 0.5,
+    variance_scaling: bool = True,
 ) -> Tuple[pd.DataFrame, EnsPredictor]:
     """Train 50-model ensemble with per-model bagging and variance scaling.
 
@@ -106,6 +107,7 @@ def train_model_ens(
     :param plot: whether to plot diagnostics
     :param num_models: Number of models in the ensemble
     :param batch_fraction: Fraction of training data to use for each model
+    :param variance_scaling: whether to apply variance scaling to ensemble predictions
     :returns: tuple of (stats_df, ensemble_predictor)
     """
     
@@ -172,11 +174,17 @@ def train_model_ens(
     mean_train = fe_train.mean(dim=0)
     std_train = fe_train.std(dim=0)
 
-    mean_shift = get_mean_shift(fe_train, y_train)
+
+    if variance_scaling:
+        mean_shift = get_mean_shift(fe_train, y_train)
     
-    # Analytical best scaler to minimize NLL
-    variance_scaler = 2*(get_nll_samples(fe_train + mean_shift, y_train) - get_nll_samples(fe_train + mean_shift, fe_train.mean(dim=0) + mean_shift))
-    
+        # Analytical best scaler to minimize NLL
+        variance_scaler = 2*(get_nll_samples(fe_train + mean_shift, y_train) - get_nll_samples(fe_train + mean_shift, fe_train.mean(dim=0) + mean_shift))
+
+    else:
+        mean_shift = torch.tensor(0.0)
+        variance_scaler = torch.tensor(1.0)
+        
     def scaled_model(x):
         y = vmap(fmodel, in_dims=(0, 0, None), randomness="different")(
             params, buffers, x
