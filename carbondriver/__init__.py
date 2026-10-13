@@ -350,7 +350,7 @@ class GDEOptimizer:
         possible_data: Optional[pd.DataFrame] = None,
     ) -> str:
         """Build the user prompt from history, data, and task description."""
-        direction = "maximize" if self.maximize else "minimize"
+        direction = "maximiz" if self.maximize else "minimiz"
 
         history_str = ""
         if self.llm_history:
