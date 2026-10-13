@@ -32,6 +32,7 @@ test_params = [
     ("MLP", {"acquisition": "logEI"}),
     ("MLP", {"acquisition": "PI"}),
     ("MLP", {"acquisition": "UCB"}),
+    ("MLP", {"variance_scaling": False}),
 ]
 
 @pytest.mark.parametrize("model_type,config_overrides", test_params)

@@ -276,7 +276,8 @@ class GDEOptimizer:
                 num_iter=self.config["num_iter"],
                 plot=self.config["make_plots"],
                 num_models=self.config.get("num_models", 50),
-                batch_fraction=self.config.get("batch_fraction", 0.5)
+                batch_fraction=self.config.get("batch_fraction", 0.5),
+                variance_scaling=self.config.get("variance_scaling", True)
             )
 
         return model, stats
