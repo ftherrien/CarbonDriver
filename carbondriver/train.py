@@ -48,25 +48,39 @@ def get_nll(
 def get_nll_samples(
     samples: torch.Tensor,
     targets: torch.Tensor,
-    covariance_scaler: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Compute NLL from samples, optionally scaling diagonal covariance.
+    Assumes samples are of shape (num_samples, num_data, num_tasks) and targets are of shape (num_data, num_tasks).
 
     :param samples: samples from predictive distribution
     :param targets: target values
-    :param covariance_scaler: optional scalar to scale variance
     :returns: NLL scalar
     """
     mean = samples.mean(dim=0)
     covariance = get_cov(samples)
-    if covariance_scaler is not None:
-        inds = torch.arange(covariance.shape[0])
-        covariance[inds, inds] *= covariance_scaler
     gmodel = gpytorch.distributions.MultitaskMultivariateNormal(
         mean=mean, covariance_matrix=covariance
     )
     return -(gmodel.log_prob(targets) / gmodel.event_shape.numel())
 
+def get_mean_shift(
+    samples: torch.Tensor,
+    targets: torch.Tensor,
+) -> torch.Tensor:
+    """Compute the mean shift to optimize NLL.
+    Assumes samples are of shape (num_samples, num_data, num_tasks) and targets are of shape (num_data, num_tasks).
+    
+    :param samples: samples from predictive distribution
+    :param targets: target values
+    :returns: optimal shift
+    """
+    targets = targets.reshape(-1, 1)
+    mean = samples.reshape(samples.shape[0], -1, 1).mean(dim=0)
+    covariance = get_cov(samples)
+    
+    B = 0.5 * ((targets - mean).T + (targets - mean)) * torch.linalg.inv(covariance)
+
+    return B.sum() / (torch.linalg.inv(covariance).sum())
 
 def train_model_ens(
     X_train: torch.Tensor,
@@ -95,6 +109,7 @@ def train_model_ens(
     :returns: tuple of (stats_df, ensemble_predictor)
     """
     
+    
     DNAME = Path(DNAME)
     DNAME.mkdir(exist_ok=True)
     n_dims = y_train.shape[-1]
@@ -116,8 +131,6 @@ def train_model_ens(
         return functional_call(base_model, (params, buffers), (x,))
 
     optimizer = torch.optim.Adam(params.values(), lr=0.001)
-    variance_scaler = torch.tensor(1.0, requires_grad=True)
-    variance_optimizer = torch.optim.Adam([variance_scaler], lr=1)
 
     # batch the train data
     num_data_per_model = ceil(X_train.shape[0] * batch_fraction)
@@ -150,33 +163,34 @@ def train_model_ens(
         loss.backward()
         optimizer.step()
         stats.loc[it, "loss"] = loss.item()
+        
 
-        # test
-        if it % ceil(num_iter / 100) == 0:
+    with torch.no_grad():
+        fe_train = vmap(fmodel, in_dims=(0, 0, None), randomness="different")(
+        params, buffers, X_train
+    )
+    mean_train = fe_train.mean(dim=0)
+    std_train = fe_train.std(dim=0)
 
-            base_model.eval()
+    mean_shift = get_mean_shift(fe_train, y_train)
+    
+    # Analytical best scaler to minimize NLL
+    variance_scaler = 2*(get_nll_samples(fe_train + mean_shift, y_train) - get_nll_samples(fe_train + mean_shift, fe_train.mean(dim=0) + mean_shift))
+    
+    def scaled_model(x):
+        y = vmap(fmodel, in_dims=(0, 0, None), randomness="different")(
+            params, buffers, x
+        )
+        y_diff = y - y.mean(dim=0, keepdim=True)
+        return y.mean(dim=0) + mean_shift + y_diff * variance_scaler.sqrt()
 
-            with torch.no_grad():
-                fe_train = vmap(fmodel, in_dims=(0, 0, None), randomness="different")(
-                    params, buffers, X_train
-                )
-                mean_train = fe_train.mean(dim=0)
-                std_train = fe_train.std(dim=0) * variance_scaler.sqrt()
-            variance_optimizer.zero_grad()
-            nll_train = get_nll_samples(
-                fe_train, y_train, covariance_scaler=variance_scaler
-            )
-            nll_train.backward()
-            variance_optimizer.step()
-            stats.loc[it, "nll"] = nll_train.item()
-            stats.loc[it, "variance_scaler"] = variance_scaler.item()
-
-            base_model.train()
-
-        f = lambda x: round(x.item() if isinstance(x, torch.Tensor) else x, 5)
+    shifted_fe_train = scaled_model(X_train)
+    shifted_mean_train = shifted_fe_train.mean(dim=0)
+    scaled_std_train = shifted_fe_train.std(dim=0)
+    
     if plot:
-        stats["nll"].dropna().plot(
-            y="nll", c="C0", ls="--", lw=0.7, alpha=0.5, ax=ax[0]
+        stats["loss"].dropna().plot(
+            y="loss", c="C0", ls="--", lw=0.7, alpha=0.5, ax=ax[0]
         )
 
     if plot:
@@ -191,23 +205,25 @@ def train_model_ens(
                 mfc="C0",
                 mec="white",
             )
+            ax[1 + j].errorbar(
+                y_train[:, j].numpy(),
+                shifted_mean_train[:, j].detach().numpy(),
+                yerr=scaled_std_train[:, j].detach().numpy(),
+                fmt="o",
+                alpha=0.5,
+                mfc="C1",
+                mec="white",
+            )
             ax[1 + j].set_xlabel(f"true dim {j}")
             ax[1 + j].set_ylabel(f"predicted mean dim {j}")
         ax[0].set_xlabel("iteration")
-        ax[0].set_ylabel("NLL (per-dimension)")
-        fig.suptitle("Training diagnostics (NLL and parity plots)", fontsize=12, y=0.98)
+        ax[0].set_ylabel("Loss")
+        fig.suptitle("Training diagnostics (Loss and parity plots)", fontsize=12, y=0.98)
         fig.tight_layout(rect=[0, 0.03, 1, 0.95])
 
         plt.show()
     # save average losses to file
     stats.to_csv(DNAME / f"stats_{i:02d}.csv")
-
-    def scaled_model(x):
-        y = vmap(fmodel, in_dims=(0, 0, None), randomness="different")(
-            params, buffers, x
-        )
-        y_diff = y - y.mean(dim=0, keepdim=True)
-        return y.mean(dim=0) + y_diff * variance_scaler.sqrt()
 
     return stats, EnsPredictor(scaled_model)
 
