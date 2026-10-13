@@ -782,9 +782,12 @@ class GDEOptimizer:
             q=1,
             num_restarts=self.config.get("num_restarts", 100),
             raw_samples=self.config.get("raw_samples", 1000),
-            options={"ftol": 1e-12},
+            options={"ftol": 1e-12, "factr": None}, # See note on next line
         )
-
+        # factr sets the same value as ftol, but needs to be set explicitely
+        # to None when ftol is set (which is weird)
+        
+        
         # Denormalize the candidate, mean=0 and std=1 if not normalized.
         x_candidate = next_experiment * stds + means
 
