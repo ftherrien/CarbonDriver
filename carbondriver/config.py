@@ -18,7 +18,7 @@ default_config = {
     "torch_seed": None,  # seed torch before fitting PhModel/GP+Ph, for reproducibility
     "propose_random_when_underdetermined": True,
     # LLM-based active learning settings (used when model_name="LLM")
-    "llm_api": "claude",          # "gemini" (not yet supported), "openai", or "claude"
+    "llm_api": "claude",  # "gemini" (not yet supported), "openai", or "claude"
     "llm_model": "claude-haiku-4-5-20251001",
     "llm_api_key": None,
     "llm_experiment_context": (

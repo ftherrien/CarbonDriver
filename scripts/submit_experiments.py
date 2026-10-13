@@ -9,10 +9,11 @@ Usage:
 
 The EXPERIMENTS list below defines all experiment configurations.
 """
-import sys
-from pathlib import Path
+
 import subprocess
 import textwrap
+from pathlib import Path
+
 import yaml
 
 MODELS = ["MLP", "GP", "GP+Ph", "Ph"]
@@ -27,17 +28,82 @@ RESULTS_DIR = Path("cluster_results")
 
 EXPERIMENTS = [
     # ── Bicarb data, liquid physics (4 models) ──────────────────
-    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "EI", "EI_reference": "max", "property_name": "FE_CO"},
-    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "EI", "EI_reference": "min", "property_name": "FE_CO"},
-    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "PI", "EI_reference": "max", "property_name": "FE_CO"},
-    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "UCB", "UCB_beta": 1.0, "property_name": "FE_CO"},
-    {"dataset": "bicarb", "system_phase": "liquid", "acquisition": "UCB", "UCB_beta": 3.0, "property_name": "FE_CO"},
+    {
+        "dataset": "bicarb",
+        "system_phase": "liquid",
+        "acquisition": "EI",
+        "EI_reference": "max",
+        "property_name": "FE_CO",
+    },
+    {
+        "dataset": "bicarb",
+        "system_phase": "liquid",
+        "acquisition": "EI",
+        "EI_reference": "min",
+        "property_name": "FE_CO",
+    },
+    {
+        "dataset": "bicarb",
+        "system_phase": "liquid",
+        "acquisition": "PI",
+        "EI_reference": "max",
+        "property_name": "FE_CO",
+    },
+    {
+        "dataset": "bicarb",
+        "system_phase": "liquid",
+        "acquisition": "UCB",
+        "UCB_beta": 1.0,
+        "property_name": "FE_CO",
+    },
+    {
+        "dataset": "bicarb",
+        "system_phase": "liquid",
+        "acquisition": "UCB",
+        "UCB_beta": 3.0,
+        "property_name": "FE_CO",
+    },
     # ── Bicarb data, gas physics (2 models) ─────────────────────
-    {"dataset": "bicarb", "system_phase": "gas", "acquisition": "EI", "EI_reference": "max", "property_name": "FE_CO", "models": ["GP+Ph", "Ph"]},
-    {"dataset": "bicarb", "system_phase": "gas", "acquisition": "EI", "EI_reference": "min", "property_name": "FE_CO", "models": ["GP+Ph", "Ph"]},
-    {"dataset": "bicarb", "system_phase": "gas", "acquisition": "PI", "EI_reference": "max", "property_name": "FE_CO", "models": ["GP+Ph", "Ph"]},
-    {"dataset": "bicarb", "system_phase": "gas", "acquisition": "UCB", "UCB_beta": 1.0, "property_name": "FE_CO", "models": ["GP+Ph", "Ph"]},
-    {"dataset": "bicarb", "system_phase": "gas", "acquisition": "UCB", "UCB_beta": 3.0, "property_name": "FE_CO", "models": ["GP+Ph", "Ph"]},
+    {
+        "dataset": "bicarb",
+        "system_phase": "gas",
+        "acquisition": "EI",
+        "EI_reference": "max",
+        "property_name": "FE_CO",
+        "models": ["GP+Ph", "Ph"],
+    },
+    {
+        "dataset": "bicarb",
+        "system_phase": "gas",
+        "acquisition": "EI",
+        "EI_reference": "min",
+        "property_name": "FE_CO",
+        "models": ["GP+Ph", "Ph"],
+    },
+    {
+        "dataset": "bicarb",
+        "system_phase": "gas",
+        "acquisition": "PI",
+        "EI_reference": "max",
+        "property_name": "FE_CO",
+        "models": ["GP+Ph", "Ph"],
+    },
+    {
+        "dataset": "bicarb",
+        "system_phase": "gas",
+        "acquisition": "UCB",
+        "UCB_beta": 1.0,
+        "property_name": "FE_CO",
+        "models": ["GP+Ph", "Ph"],
+    },
+    {
+        "dataset": "bicarb",
+        "system_phase": "gas",
+        "acquisition": "UCB",
+        "UCB_beta": 3.0,
+        "property_name": "FE_CO",
+        "models": ["GP+Ph", "Ph"],
+    },
 ]
 
 
@@ -97,13 +163,15 @@ def create_slurm_script(job_name: str, config_path: str) -> str:
 
 
 def submit_all(dst_dir: Path) -> None:
-    total_jobs = 0
     for exp in EXPERIMENTS:
         tag = experiment_tag(exp)
         models = exp.get("models", MODELS)
         print(f"\n{'─'*60}")
         print(f"  Experiment: {tag}")
-        print(f"  dataset={exp['dataset']}  system_phase={exp['system_phase']}  acquisition={exp.get('acquisition', 'EI')}", end="")
+        print(
+            f"  dataset={exp['dataset']}  system_phase={exp['system_phase']}  acquisition={exp.get('acquisition', 'EI')}",
+            end="",
+        )
         if exp.get("acquisition") == "UCB":
             print(f"  UCB_beta={exp.get('UCB_beta', 1.0)}")
         else:
@@ -118,7 +186,7 @@ def submit_all(dst_dir: Path) -> None:
             job_name = f"al_{model}_{tag}"
             config_path = dst_dir / f"_generated_{tag}_{model}.yaml"
 
-            with open(config_path, 'w') as f:
+            with open(config_path, "w") as f:
                 yaml.dump(config, f, default_flow_style=False)
 
             script_path = dst_dir / f"submit_{tag}_{model}.sh"
@@ -129,7 +197,9 @@ def submit_all(dst_dir: Path) -> None:
             try:
                 res = subprocess.run(
                     ["sbatch", str(script_path)],
-                    capture_output=True, text=True, cwd=str(dst_dir),
+                    capture_output=True,
+                    text=True,
+                    cwd=str(dst_dir),
                 )
             except FileNotFoundError as e:
                 print(f"  ✗ sbatch not found: {e}")

@@ -1,15 +1,16 @@
+import json
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Optional, Tuple
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import torch
-import json
-import os
 
 Ag_DENSITY = 10490  # kg/m^3
 Cu_DENSITY = 8935  # kg/m^3
 DEFAULT_ELECTRODE_AREA_CM2 = 1.85**2
+
 
 # Load results from folder
 def load_results_from_folder(
@@ -61,7 +62,7 @@ def load_gas_data(
 
     current = df["Current (A)"].unique()
     assert len(current) == 1
-    
+
     df = df[
         [
             "AgCu Ratio",
@@ -88,8 +89,9 @@ def load_gas_data(
     df["triplet"] = np.arange(len(df)) // 3
 
     current_density = current[0] * 1e3 / area  # mA/cm^2
-    
+
     return df.astype(float), float(current_density)
+
 
 def load_campaign_data(
     file: Optional[Path] = None,
@@ -106,14 +108,14 @@ def load_campaign_data(
     """
 
     inout_cols = ["Hotplate temperature (catalyst)", "Ink mass", "FE CO"]
-    
+
     if file is None:
         file = Path("./data/campaign_1.xlsx")
     df_dict = pd.read_excel(file, skiprows=[1], index_col="Sample ID", sheet_name=None)
 
-    df_dict.pop('V1 UBC optimization experiment', None)
-    df_dict.pop('Random', None)
-    
+    df_dict.pop("V1 UBC optimization experiment", None)
+    df_dict.pop("Random", None)
+
     df = pd.concat(df_dict.values())
 
     df = df.drop_duplicates(subset=inout_cols, keep="first")
@@ -121,19 +123,22 @@ def load_campaign_data(
     df = df.dropna(subset=inout_cols)
 
     if sum(df.index.duplicated()) != 0:
-        print(f"Warning: duplicate Sample IDs found in campaign data: {df.index[df.index.duplicated()]}")
+        print(
+            f"Warning: duplicate Sample IDs found in campaign data: {df.index[df.index.duplicated()]}"
+        )
 
     df = df.reset_index()
-    
+
     df = df[["Type", "Hotplate temperature (catalyst)", "Ink mass", "FE CO"]]
 
-
-    df.loc[:, "Hotplate temperature (catalyst)"] = df.loc[:, "Hotplate temperature (catalyst)"].astype(float)
+    df.loc[:, "Hotplate temperature (catalyst)"] = df.loc[
+        :, "Hotplate temperature (catalyst)"
+    ].astype(float)
 
     df["FE CO"] = df["FE CO"] / 100
 
     df["triplet"] = df.groupby(["Hotplate temperature (catalyst)", "Ink mass"]).ngroup()
-    
+
     init_triplets = df[df["Type"] == "init"]["triplet"].unique().astype(int).tolist()
 
     df = df.drop(columns=["Type"])
@@ -143,16 +148,16 @@ def load_campaign_data(
         area = electrode_area_cm2  # cm^2
         A = area * 1e-4  # m^2
         thickness = (mass / Ag_DENSITY) / A  # m
-        df["zero_eps_thickness"]  = thickness
+        df["zero_eps_thickness"] = thickness
         df = df.drop(columns=["Ink mass"])
-    
+
     return df, init_triplets
 
 
 def load_bicarb_data(
     filepath: Optional[Path] = None,
     electrode_area_cm2: float = DEFAULT_ELECTRODE_AREA_CM2,
-    convert_to_zlt = True
+    convert_to_zlt=True,
 ) -> pd.DataFrame:
     """
     Reads the Bicarb CSV and melts the multiple result columns into new entries.
@@ -164,10 +169,10 @@ def load_bicarb_data(
     if filepath is None:
         filepath = Path("./data/bicarb.xlsx")
 
-    df = pd.read_excel(filepath, header=1, index_col=0).iloc[3:,:]
+    df = pd.read_excel(filepath, header=1, index_col=0).iloc[3:, :]
 
     df = separate_repeats(df)
-    df = df.apply(pd.to_numeric, errors='coerce')
+    df = df.apply(pd.to_numeric, errors="coerce")
 
     df = df.drop(columns=[df.columns[0], "Voltage"])
 
@@ -179,18 +184,19 @@ def load_bicarb_data(
         area = electrode_area_cm2  # cm^2
         A = area * 1e-4  # m^2
         thickness = (mass / Ag_DENSITY) / A  # m
-        df["zero_eps_thickness"]  = thickness
+        df["zero_eps_thickness"] = thickness
         df = df.drop(columns=["Ag weight"])
 
     df.rename(columns={"Current density": "current_density"}, inplace=True)
 
     return df.astype(float)
-    
+
+
 def separate_repeats(df):
-    
+
     df.columns = [c.strip() for c in df.columns]
 
-    result_metrics = ['Voltage', 'FE_CO', 'CO2 utilization']
+    result_metrics = ["Voltage", "FE_CO", "CO2 utilization"]
 
     # Find all columns that ARE NOT the repeating result metrics
     param_cols = [c for c in df.columns if not any(m in c for m in result_metrics)]
@@ -199,30 +205,32 @@ def separate_repeats(df):
     melted_frames = []
 
     # Pandas appends .1 and .2 to duplicate column names
-    suffixes = ['', '.1', '.2']
+    suffixes = ["", ".1", ".2"]
     for i, suffix in enumerate(suffixes):
-        v_col = f'Voltage{suffix}'
-        f_col = f'FE_CO{suffix}'
-        c_col = f'CO2 utilization{suffix}'
+        v_col = f"Voltage{suffix}"
+        f_col = f"FE_CO{suffix}"
+        c_col = f"CO2 utilization{suffix}"
         # Check if this set exists
         if v_col in df.columns:
             cols_to_extract = param_cols + [v_col, f_col, c_col]
             subset = df[cols_to_extract].copy()
             # Rename to standard names (removing suffixes)
-            subset = subset.rename(columns={
-                v_col: 'Voltage',
-                f_col: 'FE_CO',
-                c_col: 'CO2 utilization' # We'll use underscore for the final DF
-            })
+            subset = subset.rename(
+                columns={
+                    v_col: "Voltage",
+                    f_col: "FE_CO",
+                    c_col: "CO2 utilization",  # We'll use underscore for the final DF
+                }
+            )
             melted_frames.append(subset)
     # Combine all result sets
     final_df = pd.concat(melted_frames, ignore_index=True)
 
     # Drop rows where ALL result values are NaN
-    final_df = final_df.dropna(subset=result_metrics, how='all')
+    final_df = final_df.dropna(subset=result_metrics, how="all")
 
     final_df["triplet"] = final_df.groupby(param_cols).ngroup()
-    
+
     return final_df
 
 

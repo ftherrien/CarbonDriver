@@ -1,14 +1,12 @@
-from dataclasses import dataclass, field
-from typing import Dict, Literal, Tuple, Union, Optional
-from types import MappingProxyType  # immutable dictionary
+import warnings
 from functools import cached_property
-import pandas as pd
+from types import MappingProxyType  # immutable dictionary
+from typing import Dict, Literal, Optional, Tuple, Union
+
 import numpy as np
-import matplotlib.pyplot as plt
 import scipy.optimize as opt
 import torch
 import torch.nn.functional
-import warnings
 
 diffusion_coefficients = MappingProxyType(
     {
@@ -407,7 +405,7 @@ class System(torch.nn.Module):
         gdl_mass_transfer_coeff: torch.Tensor,
         i_target: Optional[torch.Tensor] = None,
         t_CO2: float = 0.84,
-    ):  
+    ):
         A = self.volumetric_surface_area(eps, r)
         F = self.F
         R = self.R
@@ -440,10 +438,11 @@ class System(torch.nn.Module):
             / self.chemical_reaction_rates["c_ref"]
             * torch.exp(
                 torch.clamp(
-                -overpotential_CO
-                * self.butler_volmer_factor
-                * self.electrode_reaction_kinetics["alpha_CO"],
-                max=_BV_MAX)
+                    -overpotential_CO
+                    * self.butler_volmer_factor
+                    * self.electrode_reaction_kinetics["alpha_CO"],
+                    max=_BV_MAX,
+                )
             )
         )
         k0_C2H4 = (
@@ -454,10 +453,11 @@ class System(torch.nn.Module):
             / self.chemical_reaction_rates["c_ref"]
             * torch.exp(
                 torch.clamp(
-                -overpotential_C2H4
-                * self.butler_volmer_factor
-                * self.electrode_reaction_kinetics["alpha_C2H4"],
-                max=_BV_MAX)
+                    -overpotential_C2H4
+                    * self.butler_volmer_factor
+                    * self.electrode_reaction_kinetics["alpha_C2H4"],
+                    max=_BV_MAX,
+                )
             )
         )
         k0 = k0_CO + k0_C2H4
@@ -469,10 +469,11 @@ class System(torch.nn.Module):
             / F
             * torch.exp(
                 torch.clamp(
-                -phi_ext
-                * self.butler_volmer_factor
-                * self.electrode_reaction_kinetics["alpha_H2b"],
-                max=_BV_MAX)
+                    -phi_ext
+                    * self.butler_volmer_factor
+                    * self.electrode_reaction_kinetics["alpha_H2b"],
+                    max=_BV_MAX,
+                )
             )
         )  # phi_ext is with respect to SHE
 
@@ -543,7 +544,10 @@ class System(torch.nn.Module):
                     )
                 )
             )
-            C = self.salting_out_exponents["h_CO3"] + 2 * self.salting_out_exponents["h_K"]
+            C = (
+                self.salting_out_exponents["h_CO3"]
+                + 2 * self.salting_out_exponents["h_K"]
+            )
             c20 = (
                 A_1
                 + torch.log(
@@ -572,8 +576,7 @@ class System(torch.nn.Module):
 
             k2 = k0 + eps * self.chemical_reaction_rates["k1f"] * c12
             eff_2 = 1 / (
-                torch.sqrt(k2 * L**2 / DCO2)
-                / torch.tanh(torch.sqrt(k2 * L**2 / DCO2))
+                torch.sqrt(k2 * L**2 / DCO2) / torch.tanh(torch.sqrt(k2 * L**2 / DCO2))
                 + k2 * L / gdl_mass_transfer_coeff
             )
 
@@ -638,7 +641,8 @@ class System(torch.nn.Module):
                     )
                 )
             ) / (
-                self.salting_out_exponents["h_CO3"] + 2 * self.salting_out_exponents["h_K"]
+                self.salting_out_exponents["h_CO3"]
+                + 2 * self.salting_out_exponents["h_K"]
             )
             c21 = torch.maximum(c21, torch.zeros_like(c21))
             c03 = self.p0 * Hnr_c(c12, c21) * eff_2
@@ -701,15 +705,14 @@ class System(torch.nn.Module):
             # Replaced cosh/sinh with exp to prevent overflow for large M
             e2m = torch.exp(-2 * M_val)
             em = torch.exp(-M_val)
-            eta_c = (
-                (Sh * (1 + e2m - 2 * em) / M_val**2 + (1 - e2m) / M_val)
-                / (Sh * (1 + e2m) + M_val * (1 - e2m))
+            eta_c = (Sh * (1 + e2m - 2 * em) / M_val**2 + (1 - e2m) / M_val) / (
+                Sh * (1 + e2m) + M_val * (1 - e2m)
             )
 
             k0_electron = 2 * k0_CO + 6 * k0_C2H4
             if i_target is None:
                 numerator = t_CO2 * L * r_H2
-                denom_0 = (k0 - t_CO2 * k0_electron) * L + co2_transfer_coeff / eta_c 
+                denom_0 = (k0 - t_CO2 * k0_electron) * L + co2_transfer_coeff / eta_c
 
             else:
                 i_target_b = i_target.view(-1, 1).expand(-1, phi_ext.shape[1])
@@ -725,13 +728,12 @@ class System(torch.nn.Module):
                 # Step 2: compute OH- with first-pass c03
                 r_OH_gen = r_H2 + k0_electron * c03_0
                 c12 = OH_neg + (
-                    self.flow_channel_characteristics["K_L_OH"] * OH_neg
-                    + L * r_OH_gen
+                    self.flow_channel_characteristics["K_L_OH"] * OH_neg + L * r_OH_gen
                 ) / (
                     self.flow_channel_characteristics["K_L_OH"]
                     + 2 * self.chemical_reaction_rates["k1f"] * L * eps * c03_0
                 )
-                
+
                 # Step 3: compute parasitic rate coefficient and re-solve c03
                 parasitic_rate_coeff = (
                     self.chemical_reaction_rates["k1f"] * c12 * eps * L
@@ -741,12 +743,11 @@ class System(torch.nn.Module):
                 c03 = torch.clamp(c03, min=0.0, max=1e4)
             else:
                 c03 = c03_0
-                
+
             # Step 4: recompute OH- with corrected c03 for consistency
             r_OH_gen = r_H2 + k0_electron * c03
             c12 = OH_neg + (
-                self.flow_channel_characteristics["K_L_OH"] * OH_neg
-                + L * r_OH_gen
+                self.flow_channel_characteristics["K_L_OH"] * OH_neg + L * r_OH_gen
             ) / (
                 self.flow_channel_characteristics["K_L_OH"]
                 + 2 * self.chemical_reaction_rates["k1f"] * L * eps * c03
@@ -761,8 +762,7 @@ class System(torch.nn.Module):
                 - self.flow_channel_characteristics["K_L_OH"] * c12
             ) / (2 * self.flow_channel_characteristics["K_L_CO3"])
             B_2_1 = (
-                L * 2 * k0 * c03
-                / (2 * self.flow_channel_characteristics["K_L_CO3"])
+                L * 2 * k0 * c03 / (2 * self.flow_channel_characteristics["K_L_CO3"])
             )
             c21 = torch.maximum(A_1_1 + B_2_1, torch.zeros_like(A_1_1))
 
@@ -793,8 +793,16 @@ class System(torch.nn.Module):
             co_current_density + c2h4_current_density + (F * L * r_H2) / 10
         )  # mA/cm^2
         current_density_safe = torch.clamp(current_density, min=1e-30)
-        fe_co = torch.where(current_density > 1e-20, co_current_density / current_density_safe, torch.zeros_like(current_density))
-        fe_c2h4 = torch.where(current_density > 1e-20, c2h4_current_density / current_density_safe, torch.zeros_like(current_density))
+        fe_co = torch.where(
+            current_density > 1e-20,
+            co_current_density / current_density_safe,
+            torch.zeros_like(current_density),
+        )
+        fe_c2h4 = torch.where(
+            current_density > 1e-20,
+            c2h4_current_density / current_density_safe,
+            torch.zeros_like(current_density),
+        )
         parasitic = c03 * c12 * eps * L * self.chemical_reaction_rates["k1f"]
         electrode = L * k0 * c03
 
@@ -851,23 +859,31 @@ class System(torch.nn.Module):
             1, -1
         )  # monotonically decreasing
         solution = self.solve(
-            phi, eps, r, L, thetas, gdl_mass_transfer_coeff, i_target=(i_target if self.constant_J_in else None), t_CO2=t_CO2
+            phi,
+            eps,
+            r,
+            L,
+            thetas,
+            gdl_mass_transfer_coeff,
+            i_target=(i_target if self.constant_J_in else None),
+            t_CO2=t_CO2,
         )  # monotonically increasing
 
         I = solution["current_density"]
-        I = torch.where(torch.isnan(I) | torch.isinf(I),
-                        torch.zeros_like(I), I)
+        I = torch.where(torch.isnan(I) | torch.isinf(I), torch.zeros_like(I), I)
 
         i_target = i_target.view(-1, 1)
-        
+
         # Normally the solution to this warning would be to explicitely call .contiguous()
         # but since we are inside vmap, that does not actually make the tensor contiguous
         # for the C code in searchsorted.
         # This only takes a bit more time because it creates a copy, but we would do that
         # anyway by calling .contiguous()
         with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", 
-                                    message=".*torch.searchsorted.*input value tensor is non-contiguous.*")
+            warnings.filterwarnings(
+                "ignore",
+                message=".*torch.searchsorted.*input value tensor is non-contiguous.*",
+            )
             idx = torch.searchsorted(I, i_target, side="right") - 1
         # left values. Now interpolate
         idx = torch.clamp(idx, 0, I.shape[1] - 2)
@@ -875,9 +891,9 @@ class System(torch.nn.Module):
         curr_left = I.gather(dim=1, index=idx)
         curr_right = I.gather(dim=1, index=idx + 1)
         denom = curr_right - curr_left
-        p = torch.where(denom.abs() > 1e-20,
-                        (i_target - curr_left) / denom,
-                        torch.zeros_like(denom))
+        p = torch.where(
+            denom.abs() > 1e-20, (i_target - curr_left) / denom, torch.zeros_like(denom)
+        )
 
         out = {}
         for k, v in solution.items():

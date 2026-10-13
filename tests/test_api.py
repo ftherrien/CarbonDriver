@@ -1,5 +1,5 @@
 from pathlib import Path
-import random
+
 import pytest
 
 # Path to this test file
@@ -35,22 +35,23 @@ test_params = [
     ("MLP", {"variance_scaling": False}),
 ]
 
+
 @pytest.mark.parametrize("model_type,config_overrides", test_params)
 def test_gde_optimizer_within(model_type, config_overrides):
     from carbondriver import GDEOptimizer
     from carbondriver.loaders import load_gas_data
 
-    import pandas as pd
-
     df, current_density = load_gas_data(data_path)
 
     # Merge base config with overrides
     config = {"current_density": current_density, **config_overrides}
-    
+
     # Use acquisition if specified in config, otherwise default
     acquisition = config_overrides.get("acquisition", "EI")
-    
-    gde = GDEOptimizer(model_type, acquisition=acquisition, config=config, output_dir="./tmp_test_out")
+
+    gde = GDEOptimizer(
+        model_type, acquisition=acquisition, config=config, output_dir="./tmp_test_out"
+    )
 
     df_train = df.iloc[:12]
     df_explore = df.iloc[12:]
@@ -66,26 +67,30 @@ def test_gde_optimizer_within(model_type, config_overrides):
 
     print(f"Second pick ({model_type}):", ei, int(next_pick))
 
+
 @pytest.mark.parametrize("model_type,config_overrides", test_params)
 def test_gde_optimizer_free(model_type, config_overrides):
     from carbondriver import GDEOptimizer
     from carbondriver.loaders import load_gas_data
 
     df, current_density = load_gas_data(data_path)
-    
+
     # Merge base config with overrides
     config = {"current_density": current_density, **config_overrides}
-    
+
     # Use acquisition if specified in config, otherwise default
     acquisition = config_overrides.get("acquisition", "EI")
 
-    config["extra_sink"] = True # This stabilizes the liquid model
-    
-    gde = GDEOptimizer(model_type, acquisition=acquisition, config=config, output_dir="./tmp_test_out")
+    config["extra_sink"] = True  # This stabilizes the liquid model
+
+    gde = GDEOptimizer(
+        model_type, acquisition=acquisition, config=config, output_dir="./tmp_test_out"
+    )
 
     ei, next_pick = gde.step(df.iloc[:18])
 
     print(f"Result ({model_type}):", ei, next_pick)
 
+
 if __name__ == "__main__":
-        test_gde_optimizer_free("Ph", {"system_phase": "liquid"})
+    test_gde_optimizer_free("Ph", {"system_phase": "liquid"})

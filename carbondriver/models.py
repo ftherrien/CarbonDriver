@@ -1,21 +1,24 @@
-from typing import Tuple, Optional, Dict, Any, Literal, List
-import torch
+from typing import Any, Dict, List, Literal, Optional
+
 import gpytorch
-from carbondriver import gde_multi
-from botorch.models.gpytorch import GPyTorchModel
-from gpytorch.distributions import MultitaskMultivariateNormal
+import torch
 from botorch.models.ensemble import EnsembleModel
+from botorch.models.gpytorch import GPyTorchModel
 from pandas import Series
+
+from carbondriver import gde_multi
 
 SPECIAL_FEATURES = ["zero_eps_thickness", "current_density"]
 
 # Names and order of the two physics quantities PhModel always computes internally.
 MODELED_QUANTITIES = {
     "FE (Eth)": "fe_c2h4",
-    "FE (CO)": "fe_co", 
+    "FE (CO)": "fe_co",
     "FE_CO": "fe_co",
     "FE CO": "fe_co",
-    "CO2 utilization": "co2_utilization"}
+    "CO2 utilization": "co2_utilization",
+}
+
 
 class PhModel(torch.nn.Module):
     """
@@ -30,7 +33,7 @@ class PhModel(torch.nn.Module):
     These features may be included as part of the n_inputs in which case they will be
     denormalized. They can also be provided as fixed values. If a fixed value is provided
     and the feature is part of the n_inputs, the fixed value will be used.
-    
+
     The model outputs the Faradaic efficiency of CO and C2H4.
 
     Values of particle radius r and porosity ε are in
@@ -46,7 +49,7 @@ class PhModel(torch.nn.Module):
         system_phase: Literal["gas", "liquid"] = "gas",
         means: Series = Series(),
         stds: Series = Series(),
-        output_labels: List[str] = ["FE (Eth)", "FE (CO)"]
+        output_labels: List[str] = ["FE (Eth)", "FE (CO)"],
     ) -> None:
         """
         :param dropout: dropout probability
@@ -65,11 +68,17 @@ class PhModel(torch.nn.Module):
             raise ValueError("n_inputs must be >= 1")
 
         if output_labels is None:
-            raise ValueError(f"output_labels among {list(MODELED_QUANTITIES.keys())} must be provided")
+            raise ValueError(
+                f"output_labels among {list(MODELED_QUANTITIES.keys())} must be provided"
+            )
         else:
-            unknown = [label for label in output_labels if label not in MODELED_QUANTITIES]
+            unknown = [
+                label for label in output_labels if label not in MODELED_QUANTITIES
+            ]
             if unknown:
-                raise ValueError(f"output_labels {unknown} are not among physics outputs {list(MODELED_QUANTITIES.keys())}")
+                raise ValueError(
+                    f"output_labels {unknown} are not among physics outputs {list(MODELED_QUANTITIES.keys())}"
+                )
             self.output_labels = output_labels
 
         if system_phase == "gas":
@@ -86,7 +95,9 @@ class PhModel(torch.nn.Module):
         self.stds = stds
 
         self.fixed_value = {}
-        self.zlt_latent = config is not None and config.get("zero_eps_thickness") == "latent"
+        self.zlt_latent = (
+            config is not None and config.get("zero_eps_thickness") == "latent"
+        )
         for feature in SPECIAL_FEATURES:
             if feature == "zero_eps_thickness" and self.zlt_latent:
                 self.zlt_bounds = config["zero_eps_thickness_bounds"]
@@ -98,10 +109,16 @@ class PhModel(torch.nn.Module):
             else:
                 self.fixed_value[feature] = None
                 if feature not in self.means or feature not in self.stds:
-                    raise ValueError(f"Feature {feature} must be provided in means and stds if not fixed in config.")
-                if self.means.index.get_loc(feature) != self.stds.index.get_loc(feature):
-                    raise ValueError(f"Feature {feature} must have the same index in means and stds.")
-            
+                    raise ValueError(
+                        f"Feature {feature} must be provided in means and stds if not fixed in config."
+                    )
+                if self.means.index.get_loc(feature) != self.stds.index.get_loc(
+                    feature
+                ):
+                    raise ValueError(
+                        f"Feature {feature} must have the same index in means and stds."
+                    )
+
         self.net = torch.nn.Sequential(
             torch.nn.Linear(n_inputs, ldim),
             torch.nn.ReLU(),
@@ -157,20 +174,30 @@ class PhModel(torch.nn.Module):
         eps = torch.sigmoid(latents[..., [1]])
 
         if self.zlt_latent:
-            zlt = self.zlt_bounds[0] + torch.sigmoid(latents[..., [self.zlt_latent_idx]]) * (self.zlt_bounds[1] - self.zlt_bounds[0])
+            zlt = self.zlt_bounds[0] + torch.sigmoid(
+                latents[..., [self.zlt_latent_idx]]
+            ) * (self.zlt_bounds[1] - self.zlt_bounds[0])
         elif self.fixed_value["zero_eps_thickness"] is not None:
             zlt = self.fixed_value["zero_eps_thickness"]
         else:
-            zlt = x[..., self.means.index.get_loc("zero_eps_thickness")].unsqueeze(-1)*self.stds["zero_eps_thickness"] + self.means["zero_eps_thickness"]
+            zlt = (
+                x[..., self.means.index.get_loc("zero_eps_thickness")].unsqueeze(-1)
+                * self.stds["zero_eps_thickness"]
+                + self.means["zero_eps_thickness"]
+            )
 
         if self.fixed_value["current_density"] is not None:
             i_target = self.fixed_value["current_density"]
         else:
-            i_target = x[..., self.means.index.get_loc("current_density")].unsqueeze(-1)*self.stds["current_density"] + self.means["current_density"]
-        
+            i_target = (
+                x[..., self.means.index.get_loc("current_density")].unsqueeze(-1)
+                * self.stds["current_density"]
+                + self.means["current_density"]
+            )
+
         # Prevent division by zero in L calculation
         L = zlt / (1 - eps)
-        
+
         K_dl_factor = torch.exp(latents[..., [2]])
         thetas = self.softmax(2 * latents[..., 3:6])
         # CO activation must not be zero
@@ -201,7 +228,10 @@ class PhModel(torch.nn.Module):
             t_CO2=t_CO2,
         )
 
-        return torch.cat([solution[MODELED_QUANTITIES[label]] for label in self.output_labels], dim=-1)
+        return torch.cat(
+            [solution[MODELED_QUANTITIES[label]] for label in self.output_labels],
+            dim=-1,
+        )
 
 
 class MLPModel(torch.nn.Module):
@@ -258,7 +288,7 @@ class EnsPredictor(EnsembleModel):
             X_in = X.view(-1, X.shape[-1])
 
         model_output = self.model_input(X_in)
-        
+
         # Handle different output dimensions
         if model_output.dim() == 3:
             # Output is [ensemble, batch, features] -> [batch, ensemble, features]

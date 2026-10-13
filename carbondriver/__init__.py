@@ -1,17 +1,29 @@
-from .models import PhModel, MLPModel, MultitaskGPModel, BoTorchGP, MultitaskGPhysModel, MODELED_QUANTITIES
-from .train import train_model_ens, train_GP_model, train_GP_Ph_model
-from .loaders import feature_stats
-from .config import default_config
+import json
+import warnings
+from typing import Optional, Tuple
+
+import numpy as np
 import pandas as pd
 import torch
-import numpy as np
-import os, json
-from typing import Tuple, Optional
-from botorch.acquisition.analytic import LogExpectedImprovement, ExpectedImprovement, ProbabilityOfImprovement, UpperConfidenceBound
-from botorch.optim import optimize_acqf
+from botorch.acquisition.analytic import (
+    ExpectedImprovement,
+    LogExpectedImprovement,
+    ProbabilityOfImprovement,
+    UpperConfidenceBound,
+)
 from botorch.acquisition.objective import ScalarizedPosteriorTransform
-import warnings
-import gpytorch
+from botorch.optim import optimize_acqf
+
+from .config import default_config
+from .models import (
+    MODELED_QUANTITIES,
+    BoTorchGP,
+    MLPModel,
+    MultitaskGPhysModel,
+    MultitaskGPModel,
+    PhModel,
+)
+from .train import train_GP_model, train_GP_Ph_model, train_model_ens
 
 SUPPORTED_AFs = ["EI", "logEI", "PI", "UCB"]
 
@@ -121,7 +133,7 @@ class GDEOptimizer:
         :param update_stats: whether to recompute normalization statistics
         :returns: tuple of (X, y) tensors
         """
-        
+
         if data is None:
             data = self.df
 
@@ -131,12 +143,18 @@ class GDEOptimizer:
 
         if update_stats:
             if self.config["normalize_inputs"]:
-                self._means.loc[self.input_labels] = df_clean.loc[:,self.input_labels].mean()
-                self._stds.loc[self.input_labels] = df_clean.loc[:,self.input_labels].std(ddof=0)
-                
+                self._means.loc[self.input_labels] = df_clean.loc[
+                    :, self.input_labels
+                ].mean()
+                self._stds.loc[self.input_labels] = df_clean.loc[
+                    :, self.input_labels
+                ].std(ddof=0)
+
             if self.config["normalize_outputs"]:
-                self._means.loc[output_labels] = df_clean.loc[:,output_labels].mean()
-                self._stds.loc[output_labels] = df_clean.loc[:,output_labels].std(ddof=0)
+                self._means.loc[output_labels] = df_clean.loc[:, output_labels].mean()
+                self._stds.loc[output_labels] = df_clean.loc[:, output_labels].std(
+                    ddof=0
+                )
 
             if self._stds.min() < 1e-10:
                 print(
@@ -146,8 +164,12 @@ class GDEOptimizer:
 
         df_clean = (df_clean - self._means) / self._stds
 
-        X = torch.tensor(df_clean.loc[:, self.input_labels].to_numpy().copy(), dtype=torch.float32)
-        y = torch.tensor(df_clean.loc[:, output_labels].to_numpy().copy(), dtype=torch.float32)
+        X = torch.tensor(
+            df_clean.loc[:, self.input_labels].to_numpy().copy(), dtype=torch.float32
+        )
+        y = torch.tensor(
+            df_clean.loc[:, output_labels].to_numpy().copy(), dtype=torch.float32
+        )
 
         return X, y
 
@@ -187,9 +209,13 @@ class GDEOptimizer:
 
         if self.model in {PhModel, MultitaskGPhysModel}:
             for label in MODELED_QUANTITIES:
-                if label in new_data.columns and not new_data[label].between(0, 1).all():
+                if (
+                    label in new_data.columns
+                    and not new_data[label].between(0, 1).all()
+                ):
                     raise ValueError(
-                        f"PhModel output '{label}' must be a fraction in [0, 1], got values outside this range. ")
+                        f"PhModel output '{label}' must be a fraction in [0, 1], got values outside this range. "
+                    )
 
         self.df = pd.concat([self.df, new_data], axis=0)
 
@@ -241,7 +267,7 @@ class GDEOptimizer:
                 DNAME=self.output_dir,
                 i=self.i,
                 plot=self.config["make_plots"],
-                ph_frac=self.config.get("ph_frac", 0.5)
+                ph_frac=self.config.get("ph_frac", 0.5),
             )
 
         # Handle ensemble models (MLP and Ph)
@@ -278,7 +304,7 @@ class GDEOptimizer:
                 plot=self.config["make_plots"],
                 num_models=self.config.get("num_models", 50),
                 batch_fraction=self.config.get("batch_fraction", 0.5),
-                variance_scaling=self.config.get("variance_scaling", True)
+                variance_scaling=self.config.get("variance_scaling", True),
             )
 
         return model, stats
@@ -379,7 +405,7 @@ class GDEOptimizer:
                 f"Suggest the next experiment that will lead to {direction}ing '{self.quantity}' "
                 f"in the fewest number of experiments.\n"
                 f"Respond with ONLY a JSON object with:\n"
-                f'  parameter names mapped to their suggested values\n'
+                f"  parameter names mapped to their suggested values\n"
                 f'  "reason": brief explanation\n'
                 f'Example: {json.dumps({**{l: 0.0 for l in self.input_labels}, "reason": "..."})}'
             )
@@ -426,7 +452,7 @@ class GDEOptimizer:
             user = f"Parsing of your previous output failed with error: {error_message}\n\n"
         else:
             user = self._create_prompt(mode, bounds=bounds, possible_data=possible_data)
-        
+
         api_key = self.config.get("llm_api_key", None)
 
         if api == "gemini":
@@ -436,14 +462,18 @@ class GDEOptimizer:
 
         elif api == "openai":
             from openai import OpenAI
+
             response = OpenAI(api_key=api_key).chat.completions.create(
                 model=self.config["llm_model"],
-                messages=[{"role": "system", "content": system}] + self.raw_messages + [{"role": "user",   "content": user}],
+                messages=[{"role": "system", "content": system}]
+                + self.raw_messages
+                + [{"role": "user", "content": user}],
             )
             text = response.choices[0].message.content
 
         elif api == "claude":
             from anthropic import Anthropic
+
             response = Anthropic(api_key=api_key).messages.create(
                 model=self.config["llm_model"],
                 max_tokens=self.config.get("llm_max_tokens", 1024),
@@ -462,10 +492,14 @@ class GDEOptimizer:
             text = "\n".join(text_blocks)
 
         else:
-            raise ValueError(f"Unsupported llm_api '{api}'. Choose 'gemini', 'openai', or 'claude'.")
+            raise ValueError(
+                f"Unsupported llm_api '{api}'. Choose 'gemini', 'openai', or 'claude'."
+            )
 
-        self.raw_messages.extend([{"role": "user",   "content": user}, {"role": "assistant",   "content": text}])
-        
+        self.raw_messages.extend(
+            [{"role": "user", "content": user}, {"role": "assistant", "content": text}]
+        )
+
         return self._read_response(text)
 
     def _check_underdetermined_fallback(self, error: Exception) -> None:
@@ -478,19 +512,22 @@ class GDEOptimizer:
                 "generated. Set config['propose_random_when_underdetermined'] = "
                 "True to fall back to a random candidate instead."
             ) from error
-        warnings.warn(f"System may be underdetermined ({error}). Returning a random candidate.")
+        warnings.warn(
+            f"System may be underdetermined ({error}). Returning a random candidate."
+        )
 
     def _random_candidate(self, raw_bounds: torch.Tensor) -> pd.Series:
         x_candidate = (
-            torch.rand(len(self.input_labels))
-            * (raw_bounds[1, :] - raw_bounds[0, :])
+            torch.rand(len(self.input_labels)) * (raw_bounds[1, :] - raw_bounds[0, :])
             + raw_bounds[0, :]
         )
         return pd.Series(
             x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
         )
 
-    def _select_acquisition_target(self, vals: torch.Tensor, target_idx: int) -> torch.Tensor:
+    def _select_acquisition_target(
+        self, vals: torch.Tensor, target_idx: int
+    ) -> torch.Tensor:
         # vals can be:
         #  - 0D: single-candidate, single-output acquisition value
         #  - 1D: (batch,) already scalar per point
@@ -518,7 +555,9 @@ class GDEOptimizer:
         :returns: DataFrame with a single "acquisition" column, one row per row of x
         """
         if self.predictor is None:
-            raise RuntimeError("No predictor available yet; call step() or step_within_data() first.")
+            raise RuntimeError(
+                "No predictor available yet; call step() or step_within_data() first."
+            )
 
         target_idx = self.output_labels.index(self.quantity)
         X, _ = self._get_data_tensors(data=x)
@@ -527,7 +566,9 @@ class GDEOptimizer:
             warnings.filterwarnings("ignore", message="Output shape checks failed!")
             vals = AF(X.unsqueeze(1))
         scores = self._select_acquisition_target(vals, target_idx)
-        return pd.DataFrame({"acquisition": scores.detach().cpu().numpy()}, index=x.index)
+        return pd.DataFrame(
+            {"acquisition": scores.detach().cpu().numpy()}, index=x.index
+        )
 
     def _plot_2d_debug(
         self,
@@ -565,25 +606,48 @@ class GDEOptimizer:
         af = af.detach().reshape(n, n)
 
         posterior = predictor.posterior(grid_norm.detach())
-        mean = posterior.mean.view(n**2,-1)[:, target_idx].detach().reshape(n, n)
-        std = posterior.variance.sqrt().view(n**2,-1)[:, target_idx].detach().reshape(n, n)
+        mean = posterior.mean.view(n**2, -1)[:, target_idx].detach().reshape(n, n)
+        std = (
+            posterior.variance.sqrt()
+            .view(n**2, -1)[:, target_idx]
+            .detach()
+            .reshape(n, n)
+        )
 
         fig, ax = plt.subplots(ncols=3, figsize=(15, 4))
         for a, z, title in zip(ax, [af, mean, std], ["Acquisition", "Mean", "Std"]):
             pc = a.pcolormesh(xx, yy, z, shading="auto")
             fig.colorbar(pc, ax=a)
-            a.contour(xx, yy, z, levels = n, colors="k", linewidths=0.5, alpha=0.6)
-            a.scatter(*self.df[self.input_labels].to_numpy().T, c="k", marker="o", label="observed")
+            a.contour(xx, yy, z, levels=n, colors="k", linewidths=0.5, alpha=0.6)
+            a.scatter(
+                *self.df[self.input_labels].to_numpy().T,
+                c="k",
+                marker="o",
+                label="observed",
+            )
             if possible_data is not None:
-                a.scatter(*possible_data[self.input_labels].to_numpy().T, c="w", marker="x", label="candidates")
-            a.scatter(*candidate[self.input_labels], c="r", marker="*", s=200, label="next experiment")
+                a.scatter(
+                    *possible_data[self.input_labels].to_numpy().T,
+                    c="w",
+                    marker="x",
+                    label="candidates",
+                )
+            a.scatter(
+                *candidate[self.input_labels],
+                c="r",
+                marker="*",
+                s=200,
+                label="next experiment",
+            )
             a.set_title(title)
             a.set_xlabel(self.input_labels[0])
             a.set_ylabel(self.input_labels[1])
         step = max(n // 15, 1)
         ax[0].quiver(
-            xx[::step, ::step], yy[::step, ::step],
-            grad[::step, ::step, 0], grad[::step, ::step, 1],
+            xx[::step, ::step],
+            yy[::step, ::step],
+            grad[::step, ::step, 0],
+            grad[::step, ::step, 1],
             color="r",
         )
         ax[0].legend()
@@ -600,16 +664,18 @@ class GDEOptimizer:
         :param bounds: Optional bounds for the optimization (default: inferred from data)
         :returns: tuple of (acquisition_function_value, next_experiment_parameters)
         """
-        
+
         self.update_data(new_data)
-        
+
         if self.model == "LLM":
             attempt = 0
             self.raw_messages = []  # Reset message history for this step
             error_message = None
             for attempt in range(self.config.get("llm_max_attempts", 3)):
                 try:
-                    result = self._llm_suggest("step", bounds=bounds, error_message=error_message)
+                    result = self._llm_suggest(
+                        "step", bounds=bounds, error_message=error_message
+                    )
                     suggestion = {l: result[l] for l in self.input_labels}
 
                 except Exception as e:
@@ -618,19 +684,33 @@ class GDEOptimizer:
                         print(self.raw_messages)
                         raise
                     else:
-                        print(f"LLM call failed with error: {e}. Retrying (attempt {attempt + 1})...")
+                        print(
+                            f"LLM call failed with error: {e}. Retrying (attempt {attempt + 1})..."
+                        )
                         error_message = repr(e)
-                        continue                        
+                        continue
 
                 reason = result.pop("reason", None)
-                    
-                if np.isclose(pd.Series(suggestion), self.df.loc[:, self.input_labels], rtol=self.config.get("similarity_tolerance", 1e-5)).all(axis=1).any():
-                    print("LLM suggested a point that is already in the dataset. Retrying...")
+
+                if (
+                    np.isclose(
+                        pd.Series(suggestion),
+                        self.df.loc[:, self.input_labels],
+                        rtol=self.config.get("similarity_tolerance", 1e-5),
+                    )
+                    .all(axis=1)
+                    .any()
+                ):
+                    print(
+                        "LLM suggested a point that is already in the dataset. Retrying..."
+                    )
                     error_message = "Your suggested experiment already exists in the dataset or is very close to an existing one."
                     continue
                 break
-                
-            self.llm_history.append({"step": self.i, "suggestion": suggestion, "reason": reason})
+
+            self.llm_history.append(
+                {"step": self.i, "suggestion": suggestion, "reason": reason}
+            )
             if reason:
                 print(f"LLM reason: {reason}")
             self.i += 1
@@ -680,28 +760,32 @@ class GDEOptimizer:
         # print(f"[step] optimizing target column index (target_idx): {target_idx} for quantity '{self.quantity}'")
 
         means, stds = (
-            torch.tensor(self._means[self.input_labels].to_numpy().copy()), # Will be 0 if not normalized
-            torch.tensor(self._stds[self.input_labels].to_numpy().copy()), # Will be 1 if not normalized
+            torch.tensor(
+                self._means[self.input_labels].to_numpy().copy()
+            ),  # Will be 0 if not normalized
+            torch.tensor(
+                self._stds[self.input_labels].to_numpy().copy()
+            ),  # Will be 1 if not normalized
         )  # feature-only stats
 
         bounds_norm = (raw_bounds - means) / stds
-        
+
         # print(f"[step] normalized bounds min: {bounds_norm[0].tolist()} max: {bounds_norm[1].tolist()}")
         opt_bounds = bounds_norm.float()
 
         def AF_q(x):
             return self._select_acquisition_target(AF(x), target_idx)
-        
+
         next_experiment, _ = optimize_acqf(
             acq_function=AF_q,
             bounds=opt_bounds,
             q=1,
             num_restarts=self.config.get("num_restarts", 100),
             raw_samples=self.config.get("raw_samples", 1000),
-            options={"ftol":1e-12},
+            options={"ftol": 1e-12},
         )
-        
-        # Denormalize the candidate, mean=0 and std=1 if not normalized. 
+
+        # Denormalize the candidate, mean=0 and std=1 if not normalized.
         x_candidate = next_experiment * stds + means
 
         self.i += 1
@@ -717,7 +801,7 @@ class GDEOptimizer:
 
         if self.config["make_plots"] and len(self.input_labels) == 2:
             self._plot_2d_debug(predictor, AF_q, raw_bounds, candidate)
-            
+
         return ei_val, candidate
 
     def predict(self, x: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -731,16 +815,18 @@ class GDEOptimizer:
         if not isinstance(x, pd.DataFrame):
             # This makes sure X will always be of size (batch, features) otherwise the squeeze below will fail.
             raise TypeError("Input x must be a pandas DataFrame.")
-        
+
         if self.predictor is None:
-            raise RuntimeError("No predictor available yet; call step() or step_within_data() first.")
+            raise RuntimeError(
+                "No predictor available yet; call step() or step_within_data() first."
+            )
 
         X, _ = self._get_data_tensors(data=x)
 
         posterior = self.predictor.posterior(X)
         pred_mean = posterior.mean.squeeze(1).detach().numpy()
         pred_std = posterior.variance.sqrt().squeeze(1).detach().numpy()
-            
+
         output_means = self._means[self.output_labels].to_numpy(dtype=float)
         output_stds = self._stds[self.output_labels].to_numpy(dtype=float)
         pred_mean = pred_mean * output_stds + output_means
@@ -764,12 +850,16 @@ class GDEOptimizer:
         :param return_metrics: whether to return training metrics (nll, loss)
         :returns: (best_ei_value, best_index) or (best_ei_value, best_index, metrics) if return_metrics=True
         """
-        
+
         self.update_data(new_data)
 
         if any([(label in possible_data.columns) for label in self.output_labels]):
-            print("Warning: possible_data contains output columns. Are you sure you input the right data? Labels will be ignored.")
-            possible_data = possible_data.drop(columns=self.output_labels, errors="ignore")
+            print(
+                "Warning: possible_data contains output columns. Are you sure you input the right data? Labels will be ignored."
+            )
+            possible_data = possible_data.drop(
+                columns=self.output_labels, errors="ignore"
+            )
 
         if self.model == "LLM":
             self.raw_messages = []  # Reset message history for this step
@@ -802,7 +892,9 @@ class GDEOptimizer:
 
                 reason = result.get("reason")
                 break
-            self.llm_history.append({"step": self.i, "suggestion": best_df_index, "reason": reason})
+            self.llm_history.append(
+                {"step": self.i, "suggestion": best_df_index, "reason": reason}
+            )
             if reason:
                 print(f"LLM reason: {reason}")
             self.i += 1
@@ -815,7 +907,11 @@ class GDEOptimizer:
         except torch._C._LinAlgError as error:
             self._check_underdetermined_fallback(error)
             random_idx = torch.randint(len(possible_data) - 1, (1,)).squeeze()
-            return (torch.nan, random_idx, {}) if return_metrics else (torch.nan, random_idx)
+            return (
+                (torch.nan, random_idx, {})
+                if return_metrics
+                else (torch.nan, random_idx)
+            )
         except RuntimeError as e:
             msg = str(e)
             if (
@@ -825,7 +921,11 @@ class GDEOptimizer:
             ):
                 self._check_underdetermined_fallback(e)
                 random_idx = torch.randint(len(possible_data) - 1, (1,)).squeeze()
-                return (torch.nan, random_idx, {}) if return_metrics else (torch.nan, random_idx)
+                return (
+                    (torch.nan, random_idx, {})
+                    if return_metrics
+                    else (torch.nan, random_idx)
+                )
             else:
                 raise
 
@@ -839,7 +939,10 @@ class GDEOptimizer:
             warnings.filterwarnings("ignore", message="Output shape checks failed!")
             scores = AF(X.unsqueeze(1))
 
-        if isinstance(scores, torch.Tensor) and (scores.dim() == 0 or (scores.dim() == 1 and scores.shape[0] != len(possible_data))):
+        if isinstance(scores, torch.Tensor) and (
+            scores.dim() == 0
+            or (scores.dim() == 1 and scores.shape[0] != len(possible_data))
+        ):
             scores = scores.unsqueeze(0)
 
         self.i += 1
@@ -866,10 +969,21 @@ class GDEOptimizer:
         best_ei = float(target_scores[best_idx].item())
 
         if self.config["make_plots"] and len(self.input_labels) == 2:
-            all_points = pd.concat([self.df[self.input_labels], possible_data[self.input_labels]])
-            raw_bounds = torch.tensor([all_points.min().to_list(), all_points.max().to_list()], dtype=torch.float32)
+            all_points = pd.concat(
+                [self.df[self.input_labels], possible_data[self.input_labels]]
+            )
+            raw_bounds = torch.tensor(
+                [all_points.min().to_list(), all_points.max().to_list()],
+                dtype=torch.float32,
+            )
             AF_q = lambda x: self._select_acquisition_target(AF(x), target_idx)
-            self._plot_2d_debug(predictor, AF_q, raw_bounds, possible_data.loc[best_df_index], possible_data)
+            self._plot_2d_debug(
+                predictor,
+                AF_q,
+                raw_bounds,
+                possible_data.loc[best_df_index],
+                possible_data,
+            )
 
         # Extract final training metrics from stats
         metrics = {}
@@ -891,7 +1005,7 @@ class GDEOptimizer:
                 metrics["loss"] = np.nan
         else:
             metrics["loss"] = np.nan
-        
+
         if return_metrics:
             return best_ei, best_df_index, metrics
         else:
