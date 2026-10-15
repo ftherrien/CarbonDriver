@@ -376,13 +376,13 @@ if __name__ == "__main__":
             data_file = p
         if dataset == "bicarb":
             df = load_bicarb_data(filepath=data_file)
-            output_labels = ["FE_CO", "CO2 utilization"]
+            all_output_labels = ["FE_CO", "CO2 utilization"]
         elif dataset == "gas":
             df, _cd = load_gas_data(file=data_file)
-            output_labels = ["FE (Eth)", "FE (CO)"]
+            all_output_labels = ["FE (Eth)", "FE (CO)"]
         elif dataset == "campaign":
             df, init_triplets = load_campaign_data(file=data_file)
-            output_labels = ["FE CO"]
+            all_output_labels = ["FE CO"]
             if base_config.get("verify_order", False):
                 print("Triplet original order", df)
         else:
@@ -397,16 +397,16 @@ if __name__ == "__main__":
                 "initial_triplets='init' is only valid for dataset='campaign'"
             )
 
-            
-        exclude_cols = {"triplet"} | set(output_labels)
+        exclude_cols = {"triplet"} | set(all_output_labels)
         input_labels = [
             c for c in df.columns if c not in exclude_cols and df[c].nunique() > 1
         ]
+        output_labels = base_config.get("output_labels", all_output_labels)
         df = df[df.loc[:, output_labels].notna().all(axis=1)]
 
         df_triplet_means = df.groupby("triplet").mean()
         best_id = int(df_triplet_means[base_config["property_name"]].idxmax())
-        print(f"  Loaded {len(df)} data points  |  inputs: {input_labels}")
+        print(f"  Loaded {len(df)} data points  |  inputs: {input_labels} | outputs: {output_labels}")
 
         baseline_df = create_random_baseline(
             base_config["num_runs"] * 100, base_config["property_name"]

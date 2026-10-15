@@ -143,24 +143,23 @@ if __name__ == "__main__":
             data_file = p
         if dataset == "bicarb":
             df = load_bicarb_data(filepath=data_file)
-            output_labels = ["FE_CO", "CO2 utilization"]
+            all_output_labels = ["FE_CO", "CO2 utilization"]
         elif dataset == "gas":
             df, _cd = load_gas_data(file=data_file)
-            output_labels = ["FE (Eth)", "FE (CO)"]
+            all_output_labels = ["FE (Eth)", "FE (CO)"]
         else:
             raise ValueError(f"Unknown dataset: {dataset}")
-        exclude_cols = {"triplet"} | set(output_labels)
+        exclude_cols = {"triplet"} | set(all_output_labels)
         input_labels = [
             c for c in df.columns if c not in exclude_cols and df[c].nunique() > 1
         ]
+        output_labels = base_config.get("output_labels", all_output_labels)
         df = df[df.loc[:, output_labels].notna().all(axis=1)]
         df_triplet_means = df.groupby("triplet").mean()
         all_triplet_ids = df_triplet_means.index.tolist()
         print(
             f"  Loaded {len(df)} pts  |  {len(all_triplet_ids)} triplets  |  inputs: {input_labels}"
         )
-
-        combo_dfs = []
 
         for config in combo_configs:
             print(f"\n{'─'*70}\n  COMBO: {config['run_name']}\n{'─'*70}")
@@ -216,12 +215,10 @@ if __name__ == "__main__":
                 result_df.to_csv(OUTPUT_BASE / "assessment.csv", index=False)
                 yaml.dump(config, (OUTPUT_BASE / "config.yaml").open("w"))
 
-                result_df["combo"] = config["run_name"]
-                combo_dfs.append(result_df)
-
             else:
                 print("  Using existing results.")
 
+        combo_dfs = []
         combo_configs = []
         for dirname in iglob(base_config["run_name"] + "/*"):
 
@@ -296,18 +293,10 @@ if __name__ == "__main__":
 
         all_df.to_csv(base_out / "assessment_all.csv", index=False)
 
+        important_cols = [col for col in all_df.columns if any([outname in col for outname in output_labels])] + ["n_train", "combo"]
+        
         means = (
-            all_df.loc[
-                :,
-                [
-                    "n_train",
-                    "corr_FE_CO",
-                    "nll_FE_CO",
-                    "corr_CO2 utilization",
-                    "nll_CO2 utilization",
-                    "combo",
-                ],
-            ]
+            all_df.loc[:, important_cols]
             .groupby(["combo", "n_train"])
             .mean()
         )

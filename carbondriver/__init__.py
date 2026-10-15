@@ -855,7 +855,7 @@ class GDEOptimizer:
         """
 
         self.update_data(new_data)
-
+ 
         if any([(label in possible_data.columns) for label in self.output_labels]):
             print(
                 "Warning: possible_data contains output columns. Are you sure you input the right data? Labels will be ignored."

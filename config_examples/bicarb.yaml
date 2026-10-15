@@ -13,3 +13,4 @@ use_existing_results: False
 extra_sink: False
 constant_J_in: False
 t_CO2: 0.84
+output_labels: ["FE_CO"]
