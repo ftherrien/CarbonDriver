@@ -383,14 +383,21 @@ if __name__ == "__main__":
         elif dataset == "campaign":
             df, init_triplets = load_campaign_data(file=data_file)
             output_labels = ["FE CO"]
-            if base_config.get("initial_triplets", None) is None:
-                init_triplets = None
-            elif base_config.get("initial_triplets") != "init":
-                init_triplets = base_config.get("initial_triplets")
-            print("Triplet original order", df)
+            if base_config.get("verify_order", False):
+                print("Triplet original order", df)
         else:
             raise ValueError(f"Unknown dataset: {dataset}")
 
+        if base_config.get("initial_triplets", None) is None:
+            init_triplets = None
+        elif base_config.get("initial_triplets") != "init":
+            init_triplets = base_config.get("initial_triplets")
+        elif dataset != "campaign":
+            raise ValueError(
+                "initial_triplets='init' is only valid for dataset='campaign'"
+            )
+
+            
         exclude_cols = {"triplet"} | set(output_labels)
         input_labels = [
             c for c in df.columns if c not in exclude_cols and df[c].nunique() > 1
@@ -447,7 +454,9 @@ if __name__ == "__main__":
 
             OUTPUT_BASE = Path(dirname)
 
-            if not OUTPUT_BASE.is_dir():
+            # Skip non-combo siblings: individual run dirs (e.g. "Ph_run_000") and
+            # "*_perf" folders (models_accuracy.py output) sharing the same parent.
+            if not OUTPUT_BASE.is_dir() or not list(OUTPUT_BASE.glob("*_run_*/")):
                 continue
 
             # ── collect results (always, for stats and combined plot) ─────────
