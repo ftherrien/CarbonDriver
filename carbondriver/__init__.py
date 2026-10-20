@@ -123,6 +123,9 @@ class GDEOptimizer:
         self._means = pd.Series(0.0, self.input_labels + self.output_labels)
         self._stds = pd.Series(1.0, self.input_labels + self.output_labels)
 
+    def __repr__(self):
+        return "\n".join(f"{k}: {v}" for k, v in vars(self).items())
+
     def _get_data_tensors(
         self, data: Optional[pd.DataFrame] = None, update_stats: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -305,6 +308,7 @@ class GDEOptimizer:
                 num_models=self.config.get("num_models", 50),
                 batch_fraction=self.config.get("batch_fraction", 0.5),
                 variance_scaling=self.config.get("variance_scaling", True),
+                per_output_scaling=self.config.get("per_output_scaling", False)
             )
 
         return model, stats

@@ -34,5 +34,6 @@ default_config = {
     "batch_fraction": 0.5,
     "dropout": 0.1,
     "variance_scaling": True,
+    "per_output_scaling": False,
     "ph_frac": 0.5,
 }

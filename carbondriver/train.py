@@ -20,12 +20,22 @@ from carbondriver.models import (
 )
 
 
-def get_cov(batch: torch.Tensor) -> torch.Tensor:
+def get_cov(batch: torch.Tensor, keep_dims: bool = False) -> torch.Tensor:
     """Compute batch covariance with regularization.
 
-    :param batch: tensor of samples
-    :returns: covariance matrix
+    :param batch: tensor of samples, shape (num_samples, num_data, num_tasks)
+    :param keep_dims: if True, return one covariance matrix per task instead of
+        flattening data and tasks together
+    :returns: covariance matrix, or (num_tasks, num_data, num_data) if keep_dims
     """
+    if keep_dims:
+        return torch.stack(
+            [
+                torch.cov(batch[..., j].transpose(-1, -2))
+                + 1e-6 * torch.eye(batch.shape[-2])
+                for j in range(batch.shape[-1])
+            ]
+        )
     batch = batch.reshape(*batch.shape[:-2], -1)
     return torch.cov(batch.transpose(-1, -2)) + 1e-6 * torch.eye(batch.shape[1])
 
@@ -47,16 +57,31 @@ def get_nll(
 def get_nll_samples(
     samples: torch.Tensor,
     targets: torch.Tensor,
+    keep_dims: bool = False,
 ) -> torch.Tensor:
     """Compute NLL from samples, optionally scaling diagonal covariance.
     Assumes samples are of shape (num_samples, num_data, num_tasks) and targets are of shape (num_data, num_tasks).
 
     :param samples: samples from predictive distribution
     :param targets: target values
-    :returns: NLL scalar
+    :param keep_dims: if True, return one NLL per task instead of a single
+        NLL over the flattened data and tasks
+    :returns: NLL scalar, or tensor of shape (num_tasks,) if keep_dims
     """
     mean = samples.mean(dim=0)
-    covariance = get_cov(samples)
+    covariance = get_cov(samples, keep_dims=keep_dims)
+    if keep_dims:
+        return torch.stack(
+            [
+                -(
+                    gpytorch.distributions.MultivariateNormal(
+                        mean[..., j], covariance[j]
+                    ).log_prob(targets[..., j])
+                    / mean.shape[-2]
+                )
+                for j in range(samples.shape[-1])
+            ]
+        )
     gmodel = gpytorch.distributions.MultitaskMultivariateNormal(
         mean=mean, covariance_matrix=covariance
     )
@@ -66,14 +91,29 @@ def get_nll_samples(
 def get_mean_shift(
     samples: torch.Tensor,
     targets: torch.Tensor,
+    keep_dims: bool = False,
 ) -> torch.Tensor:
     """Compute the mean shift to optimize NLL.
     Assumes samples are of shape (num_samples, num_data, num_tasks) and targets are of shape (num_data, num_tasks).
 
     :param samples: samples from predictive distribution
     :param targets: target values
-    :returns: optimal shift
+    :param keep_dims: if True, return one shift per task instead of a single
+        shift over the flattened data and tasks
+    :returns: optimal shift, or tensor of shape (num_tasks,) if keep_dims
     """
+    if keep_dims:
+        mean = samples.mean(dim=0)
+        covariance = get_cov(samples, keep_dims=True)
+        shifts = []
+        for j in range(samples.shape[-1]):
+            t = targets[..., j].reshape(-1, 1)
+            m = mean[..., j].reshape(-1, 1)
+            inv = torch.linalg.inv(covariance[j])
+            B = 0.5 * ((t - m).T + (t - m)) * inv
+            shifts.append(B.sum() / inv.sum())
+        return torch.stack(shifts)
+
     targets = targets.reshape(-1, 1)
     mean = samples.reshape(samples.shape[0], -1, 1).mean(dim=0)
     covariance = get_cov(samples)
@@ -95,6 +135,7 @@ def train_model_ens(
     num_models: int = 50,
     batch_fraction: float = 0.5,
     variance_scaling: bool = True,
+    per_output_scaling: bool = False,
 ) -> Tuple[pd.DataFrame, EnsPredictor]:
     """Train 50-model ensemble with per-model bagging and variance scaling.
 
@@ -109,6 +150,7 @@ def train_model_ens(
     :param num_models: Number of models in the ensemble
     :param batch_fraction: Fraction of training data to use for each model
     :param variance_scaling: whether to apply variance scaling to ensemble predictions
+    :param per_output_scaling: whether to scale variance per output dimension (default False)
     :returns: tuple of (stats_df, ensemble_predictor)
     """
 
@@ -174,12 +216,16 @@ def train_model_ens(
     std_train = fe_train.std(dim=0)
 
     if variance_scaling:
-        mean_shift = get_mean_shift(fe_train, y_train)
+        mean_shift = get_mean_shift(fe_train, y_train, keep_dims=per_output_scaling)
 
-        # Analytical best scaler to minimize NLL
+        # Analytical best scaler to minimize NLL, one per output dimension
         variance_scaler = 2 * (
-            get_nll_samples(fe_train + mean_shift, y_train)
-            - get_nll_samples(fe_train + mean_shift, fe_train.mean(dim=0) + mean_shift)
+            get_nll_samples(fe_train + mean_shift, y_train, keep_dims=per_output_scaling)
+            - get_nll_samples(
+                fe_train + mean_shift,
+                fe_train.mean(dim=0) + mean_shift,
+                keep_dims=per_output_scaling,
+            )
         )
 
     else:
