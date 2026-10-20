@@ -4,6 +4,7 @@ import pandas as pd
 import torch
 import yaml
 from scipy.interpolate import LinearNDInterpolator
+import argparse
 
 from carbondriver import GDEOptimizer
 from carbondriver.loaders import (
@@ -42,6 +43,10 @@ def converter(
 
 if __name__ == "__main__":
 
+    parser = argparse.ArgumentParser(description="Simulate a campaign")
+    parser.add_argument("config", type=str, help="Path to YAML config file")
+    args = parser.parse_args()
+    
     df, init_triplets = load_campaign_data(convert_to_zlt=False)
 
     df_triplet_means = df.groupby("triplet").mean()
@@ -102,8 +107,8 @@ if __name__ == "__main__":
 
     print("Bounds:\n", zlt_bounds)
     print("Starting data:\n", starting_df)
-
-    with open("config_fixed_current_liquid.yaml", "r") as f:
+    
+    with open(args.config, "r") as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
 
     gde = GDEOptimizer(
@@ -134,6 +139,7 @@ if __name__ == "__main__":
         )
 
         print("Sim lab result:", new_data["FE CO"])
+        print("Acquisition function value:", ei)
 
         new_data_converted["FE CO"] = new_data["FE CO"] * 100
         new_data_converted["Type"] = "simulated"

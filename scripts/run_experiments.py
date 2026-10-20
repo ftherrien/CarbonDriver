@@ -119,6 +119,44 @@ def choose_base_inds_numpy(
     return rng.choice(ind, size=num_choose, replace=False, p=p)
 
 
+def plot_candidates_parity(
+    gde: GDEOptimizer, possible_data: pd.DataFrame, true_values: pd.Series, best_index
+) -> None:
+    """
+    Parity plot (true vs. predicted) for every untested candidate, with the
+    prediction std as error bars and the acquisition score on a second y-axis.
+    """
+    pred_mean, pred_std = gde.predict(possible_data)
+    scores = gde.acquisition_value(possible_data)["acquisition"]
+    y_true = true_values.loc[possible_data.index]
+    y_pred, y_std = pred_mean[gde.quantity], pred_std[gde.quantity]
+
+    fig, ax = plt.subplots()
+    ax.axline((0, 0), slope=1, c="k", ls="--", lw=0.7)
+    ax.errorbar(
+        y_true, y_pred, yerr=y_std, fmt="o", alpha=0.5, mfc="C0", mec="white"
+    )
+    ax.errorbar(
+        [y_true.loc[best_index]],
+        [y_pred.loc[best_index]],
+        yerr=[y_std.loc[best_index]],
+        fmt="*",
+        ms=15,
+        mfc="r",
+        mec="white",
+    )
+    ax.set_xlabel(f"true {gde.quantity}")
+    ax.set_ylabel(f"predicted {gde.quantity}")
+
+    ax2 = ax.twinx()
+    ax2.scatter(y_true, scores, marker="s", color="g", alpha=0.5)
+    ax2.set_ylabel("Acquisition value")
+
+    fig.suptitle("Candidate parity plot")
+    fig.tight_layout()
+    plt.show()
+
+
 def run_active_learning_experiment(
     model_name: str, run_idx: int, config: dict, init_triplets: Optional[list] = None
 ):
@@ -207,6 +245,11 @@ def run_active_learning_experiment(
             ), f"Triplet order was not preserved: expected {withheld_df.iloc[0].name}, got {best_triplet}"
             print(
                 f"    ✓ Verified triplet order: {best_triplet} is the first in withheld_df"
+            )
+
+        if config.get("make_plots", False):
+            plot_candidates_parity(
+                gde, withheld_df, df_triplet_means[config["property_name"]], best_triplet
             )
 
         best_triplet = withheld_df.loc[best_triplet]
@@ -401,6 +444,7 @@ if __name__ == "__main__":
         input_labels = [
             c for c in df.columns if c not in exclude_cols and df[c].nunique() > 1
         ]
+        input_labels = base_config.get("input_labels", input_labels)
         output_labels = base_config.get("output_labels", all_output_labels)
         df = df[df.loc[:, output_labels].notna().all(axis=1)]
 
