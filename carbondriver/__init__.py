@@ -1,20 +1,19 @@
-import json
 import warnings
 from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import torch
-from botorch.acquisition.analytic import (
-    ExpectedImprovement,
-    LogExpectedImprovement,
-    ProbabilityOfImprovement,
-    UpperConfidenceBound,
-)
-from botorch.acquisition.objective import ScalarizedPosteriorTransform
 from botorch.optim import optimize_acqf
 
+from .acquisition import (
+    check_underdetermined_fallback,
+    get_acquisition_function,
+    random_candidate,
+    select_acquisition_target,
+)
 from .config import default_config
+from .llm import llm_suggest
 from .models import (
     MODELED_QUANTITIES,
     BoTorchGP,
@@ -23,6 +22,7 @@ from .models import (
     MultitaskGPModel,
     PhModel,
 )
+from .plotting import plot_2d_debug
 from .train import train_GP_model, train_GP_Ph_model, train_model_ens
 
 SUPPORTED_AFs = ["EI", "logEI", "PI", "UCB"]
@@ -313,244 +313,6 @@ class GDEOptimizer:
 
         return model, stats
 
-    def _get_acquisition_function(
-        self, predictor: torch.nn.Module
-    ) -> ExpectedImprovement | LogExpectedImprovement | ProbabilityOfImprovement:
-        """
-        Get the acquisition function based on the specified acquisition type.
-
-        :param predictor: trained model for predictions
-        :returns: BoTorch acquisition function (EI, logEI, or PI)
-
-        Note: The acquisition function is in normalized space if normalization is enabled, so the expected improvement is not the actual value for example. Also normalizing here just for consistency because y is not actually normalized.
-        """
-
-        _, y = self._get_data_tensors()
-
-        target_idx = self.output_labels.index(self.quantity)
-
-        posterior_transform = None
-        if len(self.output_labels) > 1 and isinstance(predictor, BoTorchGP):
-            weights = torch.zeros(len(self.output_labels), dtype=torch.float32)
-            weights[target_idx] = 1.0
-            posterior_transform = ScalarizedPosteriorTransform(weights=weights)
-
-        if self.config["EI_reference"] == "max":
-            best_f = y[:, target_idx].max()
-        elif self.config["EI_reference"] == "min":
-            best_f = y[:, target_idx].min()
-        else:
-            raise ValueError(
-                f"Unsupported EI_reference {self.config['EI_reference']}, expected 'max' or 'min'"
-            )
-
-        if self.acquisition == "EI":
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                return ExpectedImprovement(
-                    predictor,
-                    best_f=best_f,
-                    maximize=self.maximize,
-                    posterior_transform=posterior_transform,
-                )
-        if self.acquisition == "logEI":
-            return LogExpectedImprovement(
-                predictor,
-                best_f=best_f,
-                maximize=self.maximize,
-                posterior_transform=posterior_transform,
-            )
-        if self.acquisition == "PI":
-            return ProbabilityOfImprovement(
-                predictor,
-                best_f=best_f,
-                maximize=self.maximize,
-                posterior_transform=posterior_transform,
-            )
-        if self.acquisition == "UCB":
-            beta = self.config.get("UCB_beta", 1.0)
-            return UpperConfidenceBound(
-                predictor,
-                beta=beta,
-                maximize=self.maximize,
-                posterior_transform=posterior_transform,
-            )
-        raise ValueError(f"Unsupported acquisition function: {self.acquisition}")
-
-    def _create_prompt(
-        self,
-        mode: str,
-        bounds: Optional[torch.Tensor] = None,
-        possible_data: Optional[pd.DataFrame] = None,
-    ) -> str:
-        """Build the user prompt from history, data, and task description."""
-        direction = "maximiz" if self.maximize else "minimiz"
-
-        history_str = ""
-        if self.llm_history:
-            entries = "\n".join(
-                f"  Step {e['step']}: suggested {e['suggestion']} — reason: {e['reason']}"
-                for e in self.llm_history
-            )
-            history_str = f"Your previous suggestions and reasoning:\n{entries}\n\n"
-
-        data_str = f"Experimental data collected so far:\n{self.df.to_string()}\n\n"
-
-        if mode == "step":
-            raw_bounds = self.bounds if bounds is None else bounds
-            bounds_str = "\n".join(
-                f"  {label}: [{raw_bounds[0, i].item():.4g}, {raw_bounds[1, i].item():.4g}]"
-                for i, label in enumerate(self.input_labels)
-            )
-            return (
-                f"{history_str}"
-                f"{data_str}"
-                f"Input parameters and their allowed ranges:\n{bounds_str}\n\n"
-                f"Suggest the next experiment that will lead to {direction}ing '{self.quantity}' "
-                f"in the fewest number of experiments.\n"
-                f"Respond with ONLY a JSON object with:\n"
-                f"  parameter names mapped to their suggested values\n"
-                f'  "reason": brief explanation\n'
-                f'Example: {json.dumps({**{l: 0.0 for l in self.input_labels}, "reason": "..."})}'
-            )
-        else:  # step_within_data
-            return (
-                f"{history_str}"
-                f"{data_str}"
-                f"Candidate experiments to choose from (index on the left):\n{possible_data.to_string()}\n\n"
-                f"Select the candidate that will lead to {direction}ing '{self.quantity}' "
-                f"in the fewest number of experiments.\n"
-                f"Respond with ONLY a JSON object with:\n"
-                f'  "index": index of the best candidate in the dataframe (leftmost column)\n'
-                f'  "reason": brief explanation\n'
-                f'Example: {{"index": 0, "reason": "..."}}'
-            )
-
-    def _read_response(self, text: str) -> dict:
-        """Strip markdown code fences from LLM output and parse as JSON."""
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        return json.loads(text.strip())
-
-    def _llm_suggest(
-        self,
-        mode: str,
-        bounds: Optional[torch.Tensor] = None,
-        possible_data: Optional[pd.DataFrame] = None,
-        error_message: Optional[str] = None,
-    ) -> dict:
-        """
-        Call the configured LLM API to suggest the next experiment.
-
-        :param mode: "step" for free-form suggestion within bounds, or "step_within_data" to select from candidates
-        :param bounds: tensor of shape (2, d) with parameter bounds (used in "step" mode)
-        :param possible_data: DataFrame of candidate experiments (used in "step_within_data" mode)
-        :returns: parsed JSON dict from the LLM response
-        """
-        api = self.config.get("llm_api", "gemini")
-        system = self.config["llm_experiment_context"]
-        if error_message is not None:
-            user = f"Parsing of your previous output failed with error: {error_message}\n\n"
-        else:
-            user = self._create_prompt(mode, bounds=bounds, possible_data=possible_data)
-
-        api_key = self.config.get("llm_api_key", None)
-
-        if api == "gemini":
-            raise NotImplementedError(
-                "The 'gemini' llm_api is not currently supported (rate-limited/unavailable); use 'openai' or 'claude' instead."
-            )
-
-        elif api == "openai":
-            from openai import OpenAI
-
-            response = OpenAI(api_key=api_key).chat.completions.create(
-                model=self.config["llm_model"],
-                messages=[{"role": "system", "content": system}]
-                + self.raw_messages
-                + [{"role": "user", "content": user}],
-            )
-            text = response.choices[0].message.content
-
-        elif api == "claude":
-            from anthropic import Anthropic
-
-            response = Anthropic(api_key=api_key).messages.create(
-                model=self.config["llm_model"],
-                max_tokens=self.config.get("llm_max_tokens", 1024),
-                system=system,
-                messages=self.raw_messages + [{"role": "user", "content": user}],
-            )
-            # Claude may return thinking blocks before the final text block.
-            # Do not assume response.content[0] is a TextBlock.
-            text_blocks = [
-                block.text
-                for block in response.content
-                if getattr(block, "type", None) == "text"
-            ]
-            if not text_blocks:
-                raise ValueError("Claude response contained no text block")
-            text = "\n".join(text_blocks)
-
-        else:
-            raise ValueError(
-                f"Unsupported llm_api '{api}'. Choose 'gemini', 'openai', or 'claude'."
-            )
-
-        self.raw_messages.extend(
-            [{"role": "user", "content": user}, {"role": "assistant", "content": text}]
-        )
-
-        return self._read_response(text)
-
-    def _check_underdetermined_fallback(self, error: Exception) -> None:
-        """Raise if the random-candidate fallback is disabled, else warn about it."""
-        if not self.config.get("propose_random_when_underdetermined", True):
-            raise RuntimeError(
-                "Carbon Driver could not fit the optimization model; the training "
-                "data may be underdetermined (duplicate conditions, too little "
-                "variation, or too few observations). No recommendation was "
-                "generated. Set config['propose_random_when_underdetermined'] = "
-                "True to fall back to a random candidate instead."
-            ) from error
-        warnings.warn(
-            f"System may be underdetermined ({error}). Returning a random candidate."
-        )
-
-    def _random_candidate(self, raw_bounds: torch.Tensor) -> pd.Series:
-        x_candidate = (
-            torch.rand(len(self.input_labels)) * (raw_bounds[1, :] - raw_bounds[0, :])
-            + raw_bounds[0, :]
-        )
-        return pd.Series(
-            x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
-        )
-
-    def _select_acquisition_target(
-        self, vals: torch.Tensor, target_idx: int
-    ) -> torch.Tensor:
-        # vals can be:
-        #  - 0D: single-candidate, single-output acquisition value
-        #  - 1D: (batch,) already scalar per point
-        #  - 2D: (batch, m) for m outputs
-        if vals.dim() == 0:
-            return vals.reshape(1)
-        if vals.dim() == 1:
-            return vals
-        if vals.dim() == 2:
-            if vals.size(1) == 1:
-                return vals.squeeze(1)
-            if target_idx >= vals.size(1):
-                raise RuntimeError(
-                    f"Acquisition returned {vals.size(1)} outputs but target_idx={target_idx}"
-                )
-            return vals[:, target_idx]
-        # Fallback: flatten all but batch dim and take first column
-        return vals.view(vals.shape[0], -1)[:, 0]
-
     def acquisition_value(self, x: pd.DataFrame) -> pd.DataFrame:
         """
         Evaluate the acquisition function (using the cached predictor) at raw-scale points.
@@ -565,98 +327,14 @@ class GDEOptimizer:
 
         target_idx = self.output_labels.index(self.quantity)
         X, _ = self._get_data_tensors(data=x)
-        AF = self._get_acquisition_function(self.predictor)
+        AF = get_acquisition_function(self, self.predictor)
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="Output shape checks failed!")
             vals = AF(X.unsqueeze(1))
-        scores = self._select_acquisition_target(vals, target_idx)
+        scores = select_acquisition_target(vals, target_idx)
         return pd.DataFrame(
             {"acquisition": scores.detach().cpu().numpy()}, index=x.index
         )
-
-    def _plot_2d_debug(
-        self,
-        predictor,
-        AF_q,
-        raw_bounds: torch.Tensor,
-        candidate: pd.Series,
-        possible_data: Optional[pd.DataFrame] = None,
-        n: int = 10,
-    ) -> None:
-        """
-        Debug-only visualization for 2D input spaces: pcolormesh of the acquisition
-        function, posterior mean and posterior std over the input grid, overlaid with
-        observed data (self.df), candidate points (possible_data) and the chosen
-        next experiment.
-        """
-        import matplotlib.pyplot as plt
-
-        target_idx = self.output_labels.index(self.quantity)
-        means = torch.tensor(self._means[self.input_labels].to_numpy())
-        stds = torch.tensor(self._stds[self.input_labels].to_numpy())
-
-        x0 = torch.linspace(raw_bounds[0, 0], raw_bounds[1, 0], n)
-        x1 = torch.linspace(raw_bounds[0, 1], raw_bounds[1, 1], n)
-        xx, yy = torch.meshgrid(x0, x1, indexing="ij")
-        grid = torch.stack([xx.flatten(), yy.flatten()], dim=-1)
-        grid_norm = ((grid - means) / stds).float().unsqueeze(1)
-        grid_norm.requires_grad_(True)
-
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message="Output shape checks failed!")
-            af = AF_q(grid_norm)
-        af.sum().backward()
-        grad = grid_norm.grad.squeeze(1).reshape(n, n, -1)
-        af = af.detach().reshape(n, n)
-
-        posterior = predictor.posterior(grid_norm.detach())
-        mean = posterior.mean.view(n**2, -1)[:, target_idx].detach().reshape(n, n)
-        std = (
-            posterior.variance.sqrt()
-            .view(n**2, -1)[:, target_idx]
-            .detach()
-            .reshape(n, n)
-        )
-
-        fig, ax = plt.subplots(ncols=3, figsize=(15, 4))
-        for a, z, title in zip(ax, [af, mean, std], ["Acquisition", "Mean", "Std"]):
-            pc = a.pcolormesh(xx, yy, z, shading="auto")
-            fig.colorbar(pc, ax=a)
-            a.contour(xx, yy, z, levels=n, colors="k", linewidths=0.5, alpha=0.6)
-            a.scatter(
-                *self.df[self.input_labels].to_numpy().T,
-                c="k",
-                marker="o",
-                label="observed",
-            )
-            if possible_data is not None:
-                a.scatter(
-                    *possible_data[self.input_labels].to_numpy().T,
-                    c="w",
-                    marker="x",
-                    label="candidates",
-                )
-            a.scatter(
-                *candidate[self.input_labels],
-                c="r",
-                marker="*",
-                s=200,
-                label="next experiment",
-            )
-            a.set_title(title)
-            a.set_xlabel(self.input_labels[0])
-            a.set_ylabel(self.input_labels[1])
-        step = max(n // 15, 1)
-        ax[0].quiver(
-            xx[::step, ::step],
-            yy[::step, ::step],
-            grad[::step, ::step, 0],
-            grad[::step, ::step, 1],
-            color="r",
-        )
-        ax[0].legend()
-        fig.tight_layout()
-        plt.show()
 
     def step(
         self, new_data: pd.DataFrame, bounds: Optional[torch.Tensor] = None
@@ -677,8 +355,8 @@ class GDEOptimizer:
             error_message = None
             for attempt in range(self.config.get("llm_max_attempts", 3)):
                 try:
-                    result = self._llm_suggest(
-                        "step", bounds=bounds, error_message=error_message
+                    result = llm_suggest(
+                        self, "step", bounds=bounds, error_message=error_message
                     )
                     suggestion = {l: result[l] for l in self.input_labels}
 
@@ -734,8 +412,8 @@ class GDEOptimizer:
         try:
             predictor, stats = self.get_predictor()
         except torch._C._LinAlgError as error:
-            self._check_underdetermined_fallback(error)
-            return None, self._random_candidate(raw_bounds)
+            check_underdetermined_fallback(self.config, error)
+            return None, random_candidate(self.input_labels, raw_bounds)
         except RuntimeError as e:
             # Handle gpytorch ExactGP runtime error when model is called with inputs
             # that don't exactly match the stored training inputs (raised in debug mode).
@@ -744,14 +422,14 @@ class GDEOptimizer:
                 "You must train on the training inputs" in msg
                 or "train_inputs cannot be None" in msg
             ):
-                self._check_underdetermined_fallback(e)
-                return None, self._random_candidate(raw_bounds)
+                check_underdetermined_fallback(self.config, e)
+                return None, random_candidate(self.input_labels, raw_bounds)
             else:
                 # Unknown runtime error: re-raise so we don't silently swallow unrelated failures
                 raise
         self.predictor = predictor
 
-        AF = self._get_acquisition_function(predictor)
+        AF = get_acquisition_function(self, predictor)
 
         # Select the output column index for the quantity by name from the last two columns
 
@@ -778,7 +456,7 @@ class GDEOptimizer:
         opt_bounds = bounds_norm.float()
 
         def AF_q(x):
-            return self._select_acquisition_target(AF(x), target_idx)
+            return select_acquisition_target(AF(x), target_idx)
 
         next_experiment, _ = optimize_acqf(
             acq_function=AF_q,
@@ -807,7 +485,7 @@ class GDEOptimizer:
         )
 
         if self.config["make_plots"] and len(self.input_labels) == 2:
-            self._plot_2d_debug(predictor, AF_q, raw_bounds, candidate)
+            plot_2d_debug(self, predictor, AF_q, raw_bounds, candidate)
 
         return ei_val, candidate
 
@@ -874,7 +552,8 @@ class GDEOptimizer:
 
             for attempt in range(self.config.get("llm_max_attempts", 3)):
                 try:
-                    result = self._llm_suggest(
+                    result = llm_suggest(
+                        self,
                         "step_within_data",
                         possible_data=possible_data,
                         error_message=error_message,
@@ -912,7 +591,7 @@ class GDEOptimizer:
         try:
             predictor, stats = self.get_predictor()
         except torch._C._LinAlgError as error:
-            self._check_underdetermined_fallback(error)
+            check_underdetermined_fallback(self.config, error)
             random_idx = torch.randint(len(possible_data) - 1, (1,)).squeeze()
             return (
                 (torch.nan, random_idx, {})
@@ -926,7 +605,7 @@ class GDEOptimizer:
                 or "train_inputs cannot be None" in msg
                 or "cholesky_cpu" in msg
             ):
-                self._check_underdetermined_fallback(e)
+                check_underdetermined_fallback(self.config, e)
                 random_idx = torch.randint(len(possible_data) - 1, (1,)).squeeze()
                 return (
                     (torch.nan, random_idx, {})
@@ -940,7 +619,7 @@ class GDEOptimizer:
 
         X, _ = self._get_data_tensors(data=possible_data)
 
-        AF = self._get_acquisition_function(predictor)
+        AF = get_acquisition_function(self, predictor)
 
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="Output shape checks failed!")
@@ -983,8 +662,9 @@ class GDEOptimizer:
                 [all_points.min().to_list(), all_points.max().to_list()],
                 dtype=torch.float32,
             )
-            AF_q = lambda x: self._select_acquisition_target(AF(x), target_idx)
-            self._plot_2d_debug(
+            AF_q = lambda x: select_acquisition_target(AF(x), target_idx)
+            plot_2d_debug(
+                self,
                 predictor,
                 AF_q,
                 raw_bounds,
