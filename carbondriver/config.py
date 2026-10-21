@@ -36,4 +36,5 @@ default_config = {
     "variance_scaling": True,
     "per_output_scaling": False,
     "ph_frac": 0.5,
+    "zero_eps_thickness_bounds": [1e-6, 1e-5],
 }
