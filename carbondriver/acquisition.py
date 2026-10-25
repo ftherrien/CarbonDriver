@@ -9,6 +9,7 @@ from botorch.acquisition.analytic import (
     UpperConfidenceBound,
 )
 from botorch.acquisition.objective import ScalarizedPosteriorTransform
+from botorch.models.multitask import MultiTaskGP
 
 from .models import BoTorchGP
 
@@ -31,7 +32,7 @@ def get_acquisition_function(
     target_idx = opt.output_labels.index(opt.quantity)
 
     posterior_transform = None
-    if len(opt.output_labels) > 1 and isinstance(predictor, BoTorchGP):
+    if len(opt.output_labels) > 1 and isinstance(predictor, (BoTorchGP, MultiTaskGP)):
         weights = torch.zeros(len(opt.output_labels), dtype=torch.float32)
         weights[target_idx] = 1.0
         posterior_transform = ScalarizedPosteriorTransform(weights=weights)

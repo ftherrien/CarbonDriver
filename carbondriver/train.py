@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+from botorch.fit import fit_gpytorch_mll
+from botorch.models.multitask import MultiTaskGP
 from rich.progress import track
 from torch import vmap
 from torch.func import functional_call, stack_module_state
@@ -395,6 +397,59 @@ def train_GP_model(
         return mean_test, std_test
 
     return stats, predict, BoTorchGP(model), likelihood
+
+
+def train_BoTorch_GP_model(
+    X_train: torch.Tensor,
+    y_train: torch.Tensor,
+    DNAME: str,
+    i: int,
+) -> Tuple[pd.DataFrame, Callable, MultiTaskGP, gpytorch.likelihoods.Likelihood]:
+    """Train a GP using BoTorch's own ``MultiTaskGP`` with its out-of-the-box
+    defaults (RBF kernel with ARD and a dimension-scaled lengthscale prior),
+    fit with L-BFGS via ``fit_gpytorch_mll``. Meant as a baseline representing
+    what a user would get doing the most vanilla BO possible with BoTorch, with
+    no custom kernel/optimizer code -- contrast with train_GP_model's
+    hand-rolled isotropic-RBF + Adam GP.
+
+    :param X_train: training features of shape (n, d)
+    :param y_train: training targets of shape (n, m)
+    :param DNAME: directory name for saving stats
+    :param i: iteration index for file naming
+    :returns: tuple of (stats_df, predict_fn, botorch_model, likelihood)
+    """
+    DNAME = Path(DNAME)
+    DNAME.mkdir(exist_ok=True, parents=True)
+    num_tasks = y_train.shape[-1] if y_train.ndim > 1 else 1
+
+    # MultiTaskGP expects "long format": one row per (data point, task) pair,
+    # with an explicit task-index column appended to X.
+    n = X_train.shape[0]
+    task_idx = torch.arange(num_tasks).repeat_interleave(n).unsqueeze(-1).to(X_train)
+    X_long = torch.cat([X_train.repeat(num_tasks, 1), task_idx], dim=-1)
+    y_long = y_train.reshape(n, num_tasks).T.reshape(-1, 1)
+    model = MultiTaskGP(X_long, y_long, task_feature=-1)
+
+    mll = gpytorch.mlls.ExactMarginalLogLikelihood(model.likelihood, model)
+    fit_gpytorch_mll(mll)
+
+    model.eval()
+    with torch.no_grad():
+        output = model(*model.train_inputs)
+        final_loss = -mll(output, model.train_targets, *model.train_inputs).sum().item()
+    stats = pd.DataFrame({"loss": [final_loss]})
+    stats.to_csv(DNAME / f"stats_{i:02d}.csv")
+
+    def predict(X_test):
+        model.eval()
+        with torch.no_grad():
+            posterior = model.posterior(X_test)
+            mean_test, std_test = posterior.mean, posterior.variance.sqrt()
+        if num_tasks == 1:
+            mean_test, std_test = mean_test.squeeze(-1), std_test.squeeze(-1)
+        return mean_test, std_test
+
+    return stats, predict, model, model.likelihood
 
 
 def train_Ph_model(

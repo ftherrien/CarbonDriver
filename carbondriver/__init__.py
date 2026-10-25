@@ -23,7 +23,7 @@ from .models import (
     PhModel,
 )
 from .plotting import plot_2d_debug
-from .train import train_GP_model, train_GP_Ph_model, train_model_ens
+from .train import train_BoTorch_GP_model, train_GP_model, train_GP_Ph_model, train_model_ens
 
 SUPPORTED_AFs = ["EI", "logEI", "PI", "UCB"]
 
@@ -67,11 +67,13 @@ class GDEOptimizer:
             self.model = MLPModel
         elif model_name == "GP+Ph":
             self.model = MultitaskGPhysModel
+        elif model_name == "BoTorch-GP":
+            self.model = "BoTorch-GP"
         elif model_name == "LLM":
             self.model = "LLM"
         else:
             raise ValueError(
-                f"Unsupported model_name '{model_name}'. Supported options are 'GP', 'Ph', 'MLP', 'GP+Ph', 'LLM'."
+                f"Unsupported model_name '{model_name}'. Supported options are 'GP', 'Ph', 'MLP', 'GP+Ph', 'BoTorch-GP', 'LLM'."
             )
 
         if acquisition in SUPPORTED_AFs:
@@ -271,6 +273,15 @@ class GDEOptimizer:
                 i=self.i,
                 plot=self.config["make_plots"],
                 ph_frac=self.config.get("ph_frac", 0.5),
+            )
+
+        elif self.model == "BoTorch-GP":
+            # Vanilla BoTorch MultiTaskGP baseline (BoTorch defaults, fit_gpytorch_mll).
+            stats, _, model, likelihood = train_BoTorch_GP_model(
+                X,
+                y,
+                DNAME=self.output_dir,
+                i=self.i,
             )
 
         # Handle ensemble models (MLP and Ph)
