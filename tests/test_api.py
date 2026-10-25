@@ -38,6 +38,7 @@ test_params = [
     # Basic tests with default config for all models
     ("GP+Ph", {}),
     ("GP", {}),
+    ("BoTorch-GP", {}),
     ("Ph", {}),
     ("MLP", {}),
     ("LLM", {}),
