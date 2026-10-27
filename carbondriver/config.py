@@ -37,4 +37,7 @@ default_config = {
     "per_output_scaling": False,
     "ph_frac": 0.5,
     "zero_eps_thickness_bounds": [1e-6, 1e-5],
+    "lr": 1e-3,
+    "tol": 1e-5,
+    "early_stopping": False
 }

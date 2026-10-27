@@ -2,6 +2,7 @@ import copy
 from math import ceil
 from pathlib import Path
 from typing import Callable, Tuple
+import warnings
 
 import gpytorch
 import matplotlib.pyplot as plt
@@ -133,9 +134,12 @@ def train_model_ens(
     progress: bool = False,
     plot: bool = False,
     num_models: int = 50,
+    lr: float = 0.001,
+    tol: float = 1e-5,
     batch_fraction: float = 0.5,
     variance_scaling: bool = True,
     per_output_scaling: bool = False,
+    early_stopping: bool = False,
 ) -> Tuple[pd.DataFrame, EnsPredictor]:
     """Train 50-model ensemble with per-model bagging and variance scaling.
 
@@ -148,6 +152,8 @@ def train_model_ens(
     :param progress: whether to show progress bar
     :param plot: whether to plot diagnostics
     :param num_models: Number of models in the ensemble
+    :param lr: learning rate for optimizer
+    :param tol: relative tolerance for early stopping
     :param batch_fraction: Fraction of training data to use for each model
     :param variance_scaling: whether to apply variance scaling to ensemble predictions
     :param per_output_scaling: whether to scale variance per output dimension (default False)
@@ -159,7 +165,8 @@ def train_model_ens(
     n_dims = y_train.shape[-1]
     if plot:
         fig, ax = plt.subplots(ncols=1 + n_dims, figsize=(3 * (1 + n_dims), 3))
-        ax[0].set_title("NLL (per-dimension) — lower is better")
+        ax[0].set_title("Loss during training")
+        ax[0].set_yscale('log')
         for j in range(n_dims):
             ax[1 + j].axline((0, 0), slope=1, c="k", ls="--")
             ax[1 + j].set_title(f"Parity plot: dim {j}")
@@ -174,7 +181,7 @@ def train_model_ens(
     def fmodel(params, buffers, x):
         return functional_call(base_model, (params, buffers), (x,))
 
-    optimizer = torch.optim.Adam(params.values(), lr=0.001)
+    optimizer = torch.optim.Adam(params.values(), lr=lr)
 
     # batch the train data
     num_data_per_model = ceil(X_train.shape[0] * batch_fraction)
@@ -194,6 +201,7 @@ def train_model_ens(
     stats = {x: np.nan for x in ["loss", "val_loss"]} | {"step": np.arange(num_iter)}
     stats = pd.DataFrame(stats).set_index("step")
 
+    converged = False
     iterator = range(num_iter)
     if progress:
         iterator = track(iterator)
@@ -207,6 +215,16 @@ def train_model_ens(
         loss.backward()
         optimizer.step()
         stats.loc[it, "loss"] = loss.item()
+        
+        if it > 0 and abs(stats.loc[it - 1, "loss"] - loss.item()) < tol:
+            converged = True
+            if early_stopping:
+                break
+        elif it > 0 and (loss.item() - stats.loc[:, "loss"].min()) / stats.loc[:, "loss"].min() > 10:
+            warnings.warn("Loss increased by more than a factor 10. Check training curves and consider reducing lr")
+
+    if not converged:
+        warnings.warn(f"Convergence criteria ({tol}) not reached within {num_iter} (num_iter) iterations. Final losses:\n {stats['loss'].iloc[-5:]}")
 
     with torch.no_grad():
         fe_train = vmap(fmodel, in_dims=(0, 0, None), randomness="different")(

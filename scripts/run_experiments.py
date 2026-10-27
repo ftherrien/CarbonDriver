@@ -500,7 +500,8 @@ if __name__ == "__main__":
 
             # Skip non-combo siblings: individual run dirs (e.g. "Ph_run_000") and
             # "*_perf" folders (models_accuracy.py output) sharing the same parent.
-            if not OUTPUT_BASE.is_dir() or not list(OUTPUT_BASE.glob("*_run_*/")):
+            if (not OUTPUT_BASE.is_dir() or not list(OUTPUT_BASE.glob("*_run_*/"))
+                or OUTPUT_BASE.name[-5:] == "_perf"):
                 continue
 
             # ── collect results (always, for stats and combined plot) ─────────
