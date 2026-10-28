@@ -52,7 +52,6 @@ def assess_run(
     run_dir.mkdir(exist_ok=True, parents=True)
 
     records = []
-    cfg = {**config, "make_plots": False}
     max_n = config.get("max_train", len(train_order))
 
     for n in range(N_INIT, min(max_n, len(train_order)) + 1):
@@ -63,7 +62,7 @@ def assess_run(
             quantity=config["property_name"],
             maximize=True,
             output_dir=str(run_dir),
-            config=cfg,
+            config=config,
             input_labels=config["input_labels"],
             output_labels=config["output_labels"],
         )
@@ -83,7 +82,7 @@ def assess_run(
             r, _ = pearsonr(y_eval[:, i].cpu().numpy(), mu[:, i].cpu().numpy())
             record[f"corr_{label}"] = r
             nll_i = (
-                -torch.distributions.Normal(mu[:, i], var[:, i].sqrt())
+                -torch.distributions.Normal(mu[:, i], torch.max(var[:, i].sqrt(), torch.tensor(1e-8)))
                 .log_prob(y_eval[:, i])
                 .mean()
                 .item()
