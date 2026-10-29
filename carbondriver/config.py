@@ -18,7 +18,7 @@ default_config = {
     "torch_seed": None,  # seed torch before fitting PhModel/GP+Ph, for reproducibility
     "propose_random_when_underdetermined": True,
     # LLM-based active learning settings (used when model_name="LLM")
-    "llm_api": "claude",  # "gemini" (not yet supported), "openai", or "claude"
+    "llm_api": "claude",  # "gemini" (not yet supported), "openai", "claude", or "claude-agent"
     "llm_model": "claude-haiku-4-5-20251001",
     "llm_api_key": None,
     "llm_experiment_context": (
@@ -27,6 +27,10 @@ default_config = {
     ),
     "llm_max_tokens": 1024,
     "llm_max_attempts": 3,
+    # "claude-agent" only: working directory for the agent's own scratch code/tool use,
+    # and max agentic turns per call. Defaults to "<output_dir>/llm_agent" when None.
+    "llm_agent_cwd": None,
+    "llm_agent_max_turns": 20,
     "similarity_tolerance": 1e-5,
     "num_restarts": 20,
     "raw_samples": 200,
