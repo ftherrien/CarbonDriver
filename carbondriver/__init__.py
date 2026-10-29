@@ -77,9 +77,7 @@ class GDEOptimizer:
         if acquisition in SUPPORTED_AFs:
             self.acquisition = acquisition
             if self.acquisition == "EI":
-                print(
-                    "WARNING: You are using expected improvement, logEI is recommended instead."
-                )
+                warnings.warn("You are using expected improvement, logEI is recommended instead.")
         else:
             raise ValueError(
                 f"Only {' and '.join(SUPPORTED_AFs)} are supported for now."
@@ -104,7 +102,7 @@ class GDEOptimizer:
         self._bounds = bounds
 
         if input_labels is None:
-            self.input_labels = [
+            self.all_input_labels = [
                 "AgCu Ratio",
                 "Naf vol (ul)",
                 "Sust vol (ul)",
@@ -112,7 +110,9 @@ class GDEOptimizer:
                 "Catalyst mass loading",
             ]
         else:
-            self.input_labels = input_labels
+            self.all_input_labels = input_labels
+
+        self.input_labels = self.all_input_labels.copy()
 
         if output_labels is None:
             self.output_labels = ["FE (Eth)", "FE (CO)"]
@@ -184,8 +184,8 @@ class GDEOptimizer:
         :returns: tensor of shape (2, d) with min and max bounds for each feature
         """
         if self._bounds is None:
-            bds_max = self.df.loc[:, self.input_labels].max().to_list()
-            bds_min = self.df.loc[:, self.input_labels].min().to_list()
+            bds_max = self.df.loc[:, self.all_input_labels].max().to_list()
+            bds_min = self.df.loc[:, self.all_input_labels].min().to_list()
             raw_bounds = torch.tensor([bds_min, bds_max], dtype=torch.float32)
             # Debug: show computed raw bounds
             # print(f"[bounds] raw min: {raw_bounds[0].tolist()} raw max: {raw_bounds[1].tolist()}")
@@ -221,6 +221,11 @@ class GDEOptimizer:
                     )
 
         self.df = pd.concat([self.df, new_data], axis=0)
+
+        self.input_labels = [label for label in self.all_input_labels if self.df[label].nunique() > 1]
+
+        if len(self.input_labels) < len(self.all_input_labels):
+            warnings.warn(f"Some input labels have no variation in the dataset and will be ignored: {set(self.all_input_labels) - set(self.input_labels)}")
 
     def get_predictor(self) -> Tuple[torch.nn.Module | BoTorchGP, pd.DataFrame]:
         """
@@ -416,7 +421,7 @@ class GDEOptimizer:
             predictor, stats = self.get_predictor()
         except torch._C._LinAlgError as error:
             check_underdetermined_fallback(self.config, error)
-            return None, random_candidate(self.input_labels, raw_bounds)
+            return None, random_candidate(self.all_input_labels, raw_bounds)
         except RuntimeError as e:
             # Handle gpytorch ExactGP runtime error when model is called with inputs
             # that don't exactly match the stored training inputs (raised in debug mode).
@@ -426,7 +431,7 @@ class GDEOptimizer:
                 or "train_inputs cannot be None" in msg
             ):
                 check_underdetermined_fallback(self.config, e)
-                return None, random_candidate(self.input_labels, raw_bounds)
+                return None, random_candidate(self.all_input_labels, raw_bounds)
             else:
                 # Unknown runtime error: re-raise so we don't silently swallow unrelated failures
                 raise
@@ -453,7 +458,9 @@ class GDEOptimizer:
             ),  # Will be 1 if not normalized
         )  # feature-only stats
 
-        bounds_norm = (raw_bounds - means) / stds
+        variable_input_labels_mask = torch.tensor([label in self.input_labels for label in self.all_input_labels])
+
+        bounds_norm = (raw_bounds[:, variable_input_labels_mask] - means) / stds
 
         # print(f"[step] normalized bounds min: {bounds_norm[0].tolist()} max: {bounds_norm[1].tolist()}")
         opt_bounds = bounds_norm.float()
@@ -471,8 +478,8 @@ class GDEOptimizer:
         )
         # factr sets the same value as ftol, but needs to be set explicitely
         # to None when ftol is set (which is weird)
-        
-        
+
+
         # Denormalize the candidate, mean=0 and std=1 if not normalized.
         x_candidate = next_experiment * stds + means
 
@@ -487,8 +494,15 @@ class GDEOptimizer:
             x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
         )
 
+        if len(self.all_input_labels) > len(self.input_labels):
+            warnings.warn(f"The suggestions for the following input labels are randomly generated, since they were constant: {[label for label, mask in zip(self.all_input_labels, variable_input_labels_mask) if not mask]}")
+
+        candidate = pd.concat([candidate, random_candidate([label for label, mask in zip(self.all_input_labels, variable_input_labels_mask) if not mask], raw_bounds[:, ~variable_input_labels_mask])])
+
+        candidate = candidate[self.all_input_labels]
+
         if self.config["make_plots"] and len(self.input_labels) == 2:
-            plot_2d_debug(self, predictor, AF_q, raw_bounds, candidate)
+            plot_2d_debug(self, predictor, AF_q, raw_bounds[:, variable_input_labels_mask], candidate)
 
         return ei_val, candidate
 
@@ -540,7 +554,7 @@ class GDEOptimizer:
         """
 
         self.update_data(new_data)
- 
+
         if any([(label in possible_data.columns) for label in self.output_labels]):
             print(
                 "Warning: possible_data contains output columns. Are you sure you input the right data? Labels will be ignored."
