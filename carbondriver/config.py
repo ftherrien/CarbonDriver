@@ -16,7 +16,7 @@ default_config = {
     "zero_eps_thickness": None,
     "t_CO2": None,
     "torch_seed": None,  # seed torch before fitting PhModel/GP+Ph, for reproducibility
-    "propose_random_when_underdetermined": True,
+    "propose_random_on_fallback": True,
     # LLM-based active learning settings (used when model_name="LLM")
     "llm_api": "claude",  # "gemini" (not yet supported), "openai", or "claude"
     "llm_model": "claude-haiku-4-5-20251001",
@@ -28,6 +28,7 @@ default_config = {
     "llm_max_tokens": 1024,
     "llm_max_attempts": 3,
     "similarity_tolerance": 1e-5,
+    "max_repeats_before_random": 3,  # retries before falling back to a random candidate when step() proposes a near-duplicate point
     "num_restarts": 20,
     "raw_samples": 200,
     "num_models": 50,

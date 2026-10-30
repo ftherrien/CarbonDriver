@@ -222,8 +222,11 @@ def run_active_learning_experiment(
         .drop(columns=config["output_labels"])
     )
 
+    full_withheld_df = df_triplet_means.copy().drop(columns=config["output_labels"])
+    
     # Active learning loop
     iteration = 0
+    repeats = 0
 
     print(f"\n  Starting active learning loop with {len(withheld_df)} candidates...")
     while len(withheld_df) > 0 and (
@@ -233,9 +236,14 @@ def run_active_learning_experiment(
             f"  Run {run_idx}, Iteration {iteration}: Evaluating acquisition function..."
         )
         # Evaluate acquisition function
-        best_ei, best_triplet, metrics = gde.step_within_data(
-            train_df, withheld_df, return_metrics=True
-        )
+        if not config.get("with_replacement", False):
+            best_ei, best_triplet, metrics = gde.step_within_data(
+                train_df, withheld_df, return_metrics=True
+            )
+        else:
+            best_ei, best_triplet, metrics = gde.step_within_data(
+                train_df, full_withheld_df, return_metrics=True
+            )
 
         if config.get("verify_order", False):
             # This should only be used when checking a campaign that used the exact same params as this gde object
@@ -249,13 +257,18 @@ def run_active_learning_experiment(
 
         if config.get("make_plots", False):
             plot_candidates_parity(
-                gde, withheld_df, df_triplet_means[config["property_name"]], best_triplet
+                gde, full_withheld_df, df_triplet_means[config["property_name"]], best_triplet
             )
 
-        best_triplet = withheld_df.loc[best_triplet]
-        # This line ensures that we append the new triplet data to train_df, not replacing it
+        best_triplet = full_withheld_df.loc[best_triplet]
+
         train_df = df[df["triplet"] == best_triplet.name]
-        withheld_df = withheld_df.drop(index=best_triplet.name)
+
+        if best_triplet.name in withheld_df.index:
+            withheld_df = withheld_df.drop(index=best_triplet.name)
+        else:
+            print("    ✗ Warning: selected a previously chosen triplet!")
+            repeats += 1
 
         expected_improvements.append(best_ei if best_ei is None else float(best_ei))
         nll_values.append(metrics.get("nll", None))
@@ -280,6 +293,10 @@ def run_active_learning_experiment(
         iteration += 1
 
     print(f"  ✓ Run {run_idx} completed in {iteration} iterations.\n")
+
+    if config.get("with_replacement", False):
+        print(f"    {repeats} iterations where repeat choices of already selected triplets \n")
+
     # Save results
     results_df = pd.DataFrame(
         {
@@ -351,7 +368,7 @@ def process_runs_mean(dirname):
     return (pd.concat(all_df, axis=0) if all_df else pd.DataFrame()), config
 
 
-def create_random_baseline(n_runs, property_name):
+def create_random_baseline(n_runs, property_name, with_replacement=False, max_steps=50):
     """Create baseline runs"""
 
     all_df = []
@@ -360,11 +377,18 @@ def create_random_baseline(n_runs, property_name):
 
     for run in range(n_runs):
 
-        current_run = pd.DataFrame(index=np.arange(len(df_triplet_means)))
+        if with_replacement:
 
-        current_run["chosen_triplets"] = np.random.permutation(
-            np.arange(len(df_triplet_means))
-        )
+            current_run = pd.DataFrame(index=np.arange(max_steps))
+        
+            current_run["chosen_triplets"] = np.random.randint(0, len(df_triplet_means), max_steps)
+            
+        else:
+            current_run = pd.DataFrame(index=np.arange(len(df_triplet_means)))
+        
+            current_run["chosen_triplets"] = np.random.permutation(
+                np.arange(len(df_triplet_means))
+            )
 
         # Calculate cummax FE for this run
         current_run["cummax FE"] = (
@@ -453,7 +477,7 @@ if __name__ == "__main__":
         print(f"  Loaded {len(df)} data points  |  inputs: {input_labels} | outputs: {output_labels}")
 
         baseline_df = create_random_baseline(
-            base_config["num_runs"] * 100, base_config["property_name"]
+            base_config["num_runs"] * 100, base_config["property_name"], base_config.get("with_replacement", False)
         )
         baseline_df["combo"] = "baseline"
         combo_dfs = []
@@ -486,7 +510,8 @@ if __name__ == "__main__":
                             model, run_idx, config, init_triplets
                         )
                     except Exception as e:
-                        print(f"    ✗ Run {run_idx} failed with error: {e}")
+                        print(f"    ✗ Run {run_idx} failed with error: {repr(e)}")
+                        raise e
                         if config.get("verify_order", False):
                             raise e
                 print(f"\n  ✓ All runs done for {config['run_name']}")

@@ -101,19 +101,15 @@ def select_acquisition_target(vals: torch.Tensor, target_idx: int) -> torch.Tens
     return vals.view(vals.shape[0], -1)[:, 0]
 
 
-def check_underdetermined_fallback(config: dict, error: Exception) -> None:
+def check_random_fallback(config: dict, reason: str) -> None:
     """Raise if the random-candidate fallback is disabled, else warn about it."""
-    if not config.get("propose_random_when_underdetermined", True):
+    if not config.get("propose_random_on_fallback", True):
         raise RuntimeError(
-            "Carbon Driver could not fit the optimization model; the training "
-            "data may be underdetermined (duplicate conditions, too little "
-            "variation, or too few observations). No recommendation was "
-            "generated. Set config['propose_random_when_underdetermined'] = "
-            "True to fall back to a random candidate instead."
-        ) from error
-    warnings.warn(
-        f"System may be underdetermined ({error}). Returning a random candidate."
-    )
+            f"{reason} No recommendation was generated. Set "
+            "config['propose_random_on_fallback'] = True to fall back to a "
+            "random candidate instead."
+        )
+    warnings.warn(f"{reason} Returning a random candidate.")
 
 
 def random_candidate(input_labels: list, raw_bounds: torch.Tensor):
@@ -121,6 +117,4 @@ def random_candidate(input_labels: list, raw_bounds: torch.Tensor):
         torch.rand(len(input_labels)) * (raw_bounds[1, :] - raw_bounds[0, :])
         + raw_bounds[0, :]
     )
-    return pd.Series(
-        x_candidate.detach().cpu().numpy().flatten(), index=input_labels
-    )
+    return pd.Series(x_candidate.detach().cpu().numpy().flatten(), index=input_labels)
