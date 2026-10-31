@@ -376,7 +376,7 @@ class GDEOptimizer:
             attempt = 0
             self.raw_messages = []  # Reset message history for this step
             error_message = None
-            for attempt in range(self.config.get("llm_max_attempts", 3)):
+            for attempt in range(self.config.get("max_attempts", 3)):
                 try:
                     result = llm_suggest(
                         self, "step", bounds=bounds, error_message=error_message
@@ -384,7 +384,7 @@ class GDEOptimizer:
                     suggestion = {l: result[l] for l in self.input_labels}
 
                 except Exception as e:
-                    if attempt + 1 == self.config.get("llm_max_attempts", 3):
+                    if attempt + 1 == self.config.get("max_attempts", 3):
                         print("LLM raw messages:")
                         print(self.raw_messages)
                         raise
@@ -406,11 +406,17 @@ class GDEOptimizer:
                     .all(axis=1)
                     .any()
                 ):
-                    print(
-                        "LLM suggested a point that is already in the dataset. Retrying..."
-                    )
-                    error_message = "Your suggested experiment already exists in the dataset or is very close to an existing one."
-                    continue
+                    if self.config.get("allow_repeated_experiments", False):
+                        warnings.warn(
+                            "LLM suggested a point that already exists in the dataset; "
+                            "returning it as-is because allow_repeated_experiments is True."
+                        )
+                    else:
+                        print(
+                            "LLM suggested a point that is already in the dataset. Retrying..."
+                        )
+                        error_message = "Your suggested experiment already exists in the dataset or is very close to an existing one."
+                        continue
                 break
 
             self.llm_history.append(
@@ -515,28 +521,36 @@ class GDEOptimizer:
 
         # If the candidate duplicates an existing point, feed the matching point(s)
         # back in as "new" data (data augmentation) and retrain, up to
-        # max_repeats_before_random times, then fall back to a random candidate.
+        # max_attempts times, then fall back to a random candidate.
         duplicate_mask = np.isclose(
             candidate,
             self.df.loc[:, self.input_labels],
             rtol=self.config.get("similarity_tolerance", 1e-5),
         ).all(axis=1)
         if duplicate_mask.any():
-            max_repeats = self.config.get("max_repeats_before_random", 3)
-            if _repeat < max_repeats:
+            if self.config.get("allow_repeated_experiments", False):
                 warnings.warn(
-                    f"Candidate duplicates an existing point (retry {_repeat + 1}/{max_repeats}); "
-                    "augmenting the dataset with the matching point(s) and retraining."
+                    "Candidate duplicates an existing point; returning it as-is "
+                    "because allow_repeated_experiments is True."
                 )
-                return self.step(
-                    self.df.loc[duplicate_mask], bounds=bounds, _repeat=_repeat + 1
+            else:
+                max_repeats = self.config.get("max_attempts", 3)
+                if _repeat < max_repeats:
+                    warnings.warn(
+                        f"Candidate duplicates an existing point (retry {_repeat + 1}/{max_repeats}); "
+                        "augmenting the dataset with the matching point(s) and retraining."
+                    )
+                    return self.step(
+                        self.df.loc[duplicate_mask], bounds=bounds, _repeat=_repeat + 1
+                    )
+                check_random_fallback(
+                    self.config,
+                    f"Candidate still duplicates an existing point after {max_repeats} retries.",
                 )
-            check_random_fallback(
-                self.config,
-                f"Candidate still duplicates an existing point after {max_repeats} retries.",
-            )
-            ei_val = None
-            candidate = random_candidate(self.input_labels, raw_bounds)
+                candidate = random_candidate(self.input_labels, raw_bounds)
+                ei_val = self.acquisition_value(candidate.to_frame().T)[
+                    "acquisition"
+                ].iloc[0]
 
         if self.config["make_plots"] and len(self.input_labels) == 2:
             plot_2d_debug(self, predictor, AF_q, raw_bounds, candidate)
@@ -606,7 +620,7 @@ class GDEOptimizer:
             self.raw_messages = []  # Reset message history for this step
             error_message = None
 
-            for attempt in range(self.config.get("llm_max_attempts", 3)):
+            for attempt in range(self.config.get("max_attempts", 3)):
                 try:
                     result = llm_suggest(
                         self,
@@ -621,7 +635,7 @@ class GDEOptimizer:
                             f"Valid indices are {possible_data.index.tolist()}."
                         )
                 except Exception as error:
-                    if attempt + 1 == self.config.get("llm_max_attempts", 3):
+                    if attempt + 1 == self.config.get("max_attempts", 3):
                         print("LLM raw messages:")
                         print(self.raw_messages)
                         raise
@@ -651,7 +665,9 @@ class GDEOptimizer:
                 self.config,
                 f"Carbon Driver could not fit the optimization model; the training data may be underdetermined (duplicate conditions, too little variation, or too few observations). ({error})",
             )
-            random_idx = possible_data.index[int(torch.randint(len(possible_data) - 1, ()))]
+            random_idx = possible_data.index[
+                int(torch.randint(len(possible_data) - 1, ()))
+            ]
             return (
                 (torch.nan, random_idx, {})
                 if return_metrics
@@ -668,7 +684,9 @@ class GDEOptimizer:
                     self.config,
                     f"Carbon Driver could not fit the optimization model; the training data may be underdetermined (duplicate conditions, too little variation, or too few observations). ({e})",
                 )
-                random_idx = possible_data.index[int(torch.randint(len(possible_data) - 1, ()))]
+                random_idx = possible_data.index[
+                    int(torch.randint(len(possible_data) - 1, ()))
+                ]
                 return (
                     (torch.nan, random_idx, {})
                     if return_metrics
@@ -723,28 +741,36 @@ class GDEOptimizer:
             rtol=1e-9,
         ).all(axis=1)
         if duplicate_mask.any():
-            max_repeats = self.config.get("max_repeats_before_random", 3)
-            if _repeat < max_repeats:
+            if self.config.get("allow_repeated_experiments", False):
                 warnings.warn(
-                    f"Chose a candidate already in the dataset (retry {_repeat + 1}/{max_repeats}); "
-                    "augmenting the dataset and retraining."
+                    "Chose a candidate already in the dataset; returning it as-is "
+                    "because allow_repeated_experiments is True."
                 )
-                return self.step_within_data(
-                    self.df.loc[duplicate_mask],
-                    possible_data,
-                    return_metrics=return_metrics,
-                    _repeat=_repeat + 1,
+            else:
+                max_repeats = self.config.get("max_attempts", 3)
+                if _repeat < max_repeats:
+                    warnings.warn(
+                        f"Chose a candidate already in the dataset (retry {_repeat + 1}/{max_repeats}); "
+                        "augmenting the dataset and retraining."
+                    )
+                    return self.step_within_data(
+                        self.df.loc[duplicate_mask],
+                        possible_data,
+                        return_metrics=return_metrics,
+                        _repeat=_repeat + 1,
+                    )
+                check_random_fallback(
+                    self.config,
+                    f"Still chose a candidate already in the dataset after {max_repeats} retries.",
                 )
-            check_random_fallback(
-                self.config,
-                f"Still chose a candidate already in the dataset after {max_repeats} retries.",
-            )
-            random_idx = possible_data.index[int(torch.randint(len(possible_data) - 1, ()))]
-            return (
-                (torch.nan, random_idx, {})
-                if return_metrics
-                else (torch.nan, random_idx)
-            )
+                random_pos = int(torch.randint(len(possible_data) - 1, ()))
+                random_idx = possible_data.index[random_pos]
+                random_ei = float(target_scores[random_pos].item())
+                return (
+                    (random_ei, random_idx, {})
+                    if return_metrics
+                    else (random_ei, random_idx)
+                )
 
         if self.config["make_plots"] and len(self.input_labels) == 2:
             all_points = pd.concat(

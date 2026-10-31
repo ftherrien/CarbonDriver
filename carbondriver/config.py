@@ -26,9 +26,9 @@ default_config = {
         "Use your domain knowledge along with the experimental data provided to make informed suggestions."
     ),
     "llm_max_tokens": 1024,
-    "llm_max_attempts": 3,
     "similarity_tolerance": 1e-5,
-    "max_repeats_before_random": 3,  # retries before falling back to a random candidate when step() proposes a near-duplicate point
+    "max_attempts": 3,  # retries for LLM calls and for proposing a point already in the dataset
+    "allow_repeated_experiments": False,  # if True, skip retries and return a candidate even if it duplicates an existing point
     "num_restarts": 20,
     "raw_samples": 200,
     "num_models": 50,
@@ -40,5 +40,5 @@ default_config = {
     "zero_eps_thickness_bounds": [1e-6, 1e-5],
     "lr": 1e-3,
     "tol": 1e-5,
-    "early_stopping": False
+    "early_stopping": False,
 }

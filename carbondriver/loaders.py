@@ -97,6 +97,7 @@ def load_campaign_data(
     file: Optional[Path] = None,
     electrode_area_cm2: float = DEFAULT_ELECTRODE_AREA_CM2,
     convert_to_zlt: bool = True,
+    sheets: Optional[list[str]] = None,
 ) -> pd.DataFrame:
     """Load experimental data from Excel and compute electrode thickness.
 
@@ -111,12 +112,11 @@ def load_campaign_data(
 
     if file is None:
         file = Path("./data/campaign_1.xlsx")
-    df_dict = pd.read_excel(file, skiprows=[1], index_col="Sample ID", sheet_name=None)
-
-    df_dict.pop("V1 UBC optimization experiment", None)
-    df_dict.pop("Random", None)
+    df_dict = pd.read_excel(file, skiprows=[1], sheet_name=sheets)
 
     df = pd.concat(df_dict.values())
+
+    df = df.set_index("Sample ID", drop=True)
 
     df = df.drop_duplicates(subset=inout_cols, keep="first")
 

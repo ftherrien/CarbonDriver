@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -12,10 +14,6 @@ from carbondriver.loaders import (
     Ag_DENSITY,
     load_campaign_data,
 )
-
-INPUT_LABELS = ["Hotplate temperature (catalyst)", "Ink mass"]
-
-BOUNDS = torch.tensor([[30, 20], [150, 100]], dtype=torch.float32)
 
 eps = 1e-3  # small value to avoid extrapolation in the corners
 
@@ -46,80 +44,100 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Simulate a campaign")
     parser.add_argument("config", type=str, help="Path to YAML config file")
     args = parser.parse_args()
-    
-    df, init_triplets = load_campaign_data(convert_to_zlt=False)
+
+    with open(args.config, "r") as f:
+        config = yaml.load(f, Loader=yaml.FullLoader)
+
+    data_file = config.get("data_file", None)
+    if data_file is not None:
+        p = Path(data_file)
+        data_file = p if p.is_absolute() else Path(__file__).resolve().parent / p
+
+    property_name = config["property_name"]
+    input_labels = config.get("input_labels", ["Hotplate temperature (catalyst)", "Ink mass"])
+    bounds = torch.tensor(config.get("bounds", [[30, 20], [150, 100]]), dtype=torch.float32)
+    # Only the Ph and GP+Ph models expect zero-eps-thickness inputs
+    use_zlt = config["models"][0] in ("Ph", "GP+Ph")
+
+    df, init_triplets = load_campaign_data(
+        file=data_file, sheets=config.get("sheets", None), convert_to_zlt=False
+    )
 
     df_triplet_means = df.groupby("triplet").mean()
-    xy = df_triplet_means[INPUT_LABELS].to_numpy()
-    z = df_triplet_means["FE CO"].to_numpy()
 
-    # Adding 0s to the corners of the input space to avoid extrapolation
-    corners = np.array(
-        [
-            [BOUNDS[0, 0] - eps, BOUNDS[0, 1] - eps],
-            [BOUNDS[0, 0] - eps, BOUNDS[1, 1] + eps],
-            [BOUNDS[1, 0] + eps, BOUNDS[0, 1] - eps],
-            [BOUNDS[1, 0] + eps, BOUNDS[1, 1] + eps],
-        ]
-    )
-    xy = np.vstack([xy, corners])
-    z = np.hstack([z, [0, 0, 0, 0]])
-
-    lab_simulator = LinearNDInterpolator(xy, z)
-
-    # Just plotting the interpolation surface
-    X = np.linspace(BOUNDS[0, 0], BOUNDS[1, 0])
-    Y = np.linspace(BOUNDS[0, 1], BOUNDS[1, 1])
-
-    X, Y = np.meshgrid(X, Y)  # 2D grid for interpolation
-    Z = lab_simulator(X, Y)
-
-    plt.pcolormesh(X, Y, Z, shading="auto")
-    plt.plot(
-        df_triplet_means.loc[:, INPUT_LABELS[0]].to_numpy(),
-        df_triplet_means.loc[:, INPUT_LABELS[1]].to_numpy(),
-        "ok",
-        label="input point",
-    )
-    plt.legend()
-    plt.colorbar()
-    plt.axis("equal")
-    plt.show()
+    if config.get("simulation", True):
+        xy = df_triplet_means[input_labels].to_numpy()
+        z = df_triplet_means[property_name].to_numpy()
+        
+        # Adding 0s to the corners of the input space to avoid extrapolation
+        corners = np.array(
+            [
+                [bounds[0, 0] - eps, bounds[0, 1] - eps],
+                [bounds[0, 0] - eps, bounds[1, 1] + eps],
+                [bounds[1, 0] + eps, bounds[0, 1] - eps],
+                [bounds[1, 0] + eps, bounds[1, 1] + eps],
+            ]
+        )
+        xy = np.vstack([xy, corners])
+        z = np.hstack([z, [0, 0, 0, 0]])
+        
+        lab_simulator = LinearNDInterpolator(xy, z)
+        
+        # Just plotting the interpolation surface
+        X = np.linspace(bounds[0, 0], bounds[1, 0])
+        Y = np.linspace(bounds[0, 1], bounds[1, 1])
+        
+        X, Y = np.meshgrid(X, Y)  # 2D grid for interpolation
+        Z = lab_simulator(X, Y)
+        
+        plt.pcolormesh(X, Y, Z, shading="auto")
+        plt.plot(
+            df_triplet_means.loc[:, input_labels[0]].to_numpy(),
+            df_triplet_means.loc[:, input_labels[1]].to_numpy(),
+            "ok",
+            label="input point",
+        )
+        plt.legend()
+        plt.colorbar()
+        plt.axis("equal")
+        plt.show()
 
     # Simulated campaign
 
     # df, init_triplets = load_campaign_data("simulated_campaign_results.xlsx", convert_to_zlt = False) # TMP
 
     data = df[df["triplet"].isin(init_triplets)]
-    starting_df = converter(data.copy(), "to_zlt")
+    starting_df = converter(data.copy(), "to_zlt") if use_zlt else data.copy()
     data["Type"] = "init"
     data = data.drop(columns=["triplet"])
-    data["FE CO"] = data["FE CO"] * 100
+    data[property_name] = data[property_name] * 100
 
     data.to_csv("simulated_campaign_start.csv", index=False)
 
-    zlt_bounds = torch.tensor(
-        converter(
-            pd.DataFrame(BOUNDS.numpy(), columns=INPUT_LABELS), "to_zlt"
-        ).to_numpy(),
-        dtype=torch.float32,
-    )
+    if use_zlt:
+        gde_input_labels = [input_labels[0], "zero_eps_thickness"]
+        gde_bounds = torch.tensor(
+            converter(
+                pd.DataFrame(bounds.numpy(), columns=input_labels), "to_zlt"
+            ).to_numpy(),
+            dtype=torch.float32,
+        )
+    else:
+        gde_input_labels = input_labels
+        gde_bounds = bounds
 
-    print("Bounds:\n", zlt_bounds)
+    print("Bounds:\n", gde_bounds)
     print("Starting data:\n", starting_df)
-    
-    with open(args.config, "r") as f:
-        config = yaml.load(f, Loader=yaml.FullLoader)
 
     gde = GDEOptimizer(
         config["models"][0],
         acquisition=config["acquisition"],
         config=config,
-        output_dir="./sim_campaign",
-        input_labels=["Hotplate temperature (catalyst)", "zero_eps_thickness"],
-        bounds=zlt_bounds,
-        quantity="FE CO",
-        output_labels=["FE CO"],
+        output_dir=config.get("run_name", "./sim_campaign"),
+        input_labels=gde_input_labels,
+        bounds=gde_bounds,
+        quantity=property_name,
+        output_labels=[property_name],
     )
 
     new_data = starting_df.copy()
@@ -128,22 +146,34 @@ if __name__ == "__main__":
 
         ei, new_data = gde.step(new_data)
 
-        new_data_converted = converter(new_data, "from_zlt").copy()
+        new_data_converted = converter(new_data, "from_zlt").copy() if use_zlt else new_data.copy()
 
         print(f"Step {i+1}: Suggested experiment:", new_data_converted)
 
-        new_data["FE CO"] = float(
-            lab_simulator(
-                new_data_converted[INPUT_LABELS[0]], new_data_converted[INPUT_LABELS[1]]
+        if config.get("simulation", True):
+            new_data[property_name] = float(
+                lab_simulator(
+                    new_data_converted[input_labels[0]], new_data_converted[input_labels[1]]
+                )
             )
-        )
 
-        print("Sim lab result:", new_data["FE CO"])
+            # Fake duplicate
+            new_data = pd.concat([new_data.to_frame().T]*config.get("n_replicates", 1))
+            
+        else:
+            new_data = new_data.to_frame().T
+
+            new_data = new_data.loc[new_data.index.repeat(config.get("n_replicates", 1))].reset_index(drop=True)
+            
+            for i in new_data.index:
+                new_data.loc[i, property_name] = float(input(f"Result in %:")) / 100
+        
+        print("Sim lab result:", new_data[property_name])
         print("Acquisition function value:", ei)
 
-        new_data_converted["FE CO"] = new_data["FE CO"] * 100
+        new_data_converted[property_name] = new_data[property_name] * 100
         new_data_converted["Type"] = "simulated"
-        data = pd.concat([data, new_data_converted.to_frame().T], axis=0)
+        data = pd.concat([data, new_data_converted], axis=0)
 
     data = data.reset_index(drop=True)
     data = pd.concat(

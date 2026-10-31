@@ -448,7 +448,7 @@ if __name__ == "__main__":
             df, _cd = load_gas_data(file=data_file)
             all_output_labels = ["FE (Eth)", "FE (CO)"]
         elif dataset == "campaign":
-            df, init_triplets = load_campaign_data(file=data_file)
+            df, init_triplets = load_campaign_data(file=data_file, sheets=base_config.get("sheets", None), convert_to_zlt=base_config.get("convert_to_zlt", True))
             all_output_labels = ["FE CO"]
             if base_config.get("verify_order", False):
                 print("Triplet original order", df)
