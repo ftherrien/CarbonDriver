@@ -1,5 +1,4 @@
 default_config = {
-    "run_name": "out",
     "num_iter": 101,
     "make_plots": False,
     "normalize_inputs": True,
@@ -7,8 +6,6 @@ default_config = {
     "EI_reference": "max",
     "UCB_beta": 1.0,
     "system_phase": "gas",
-    "property_name": "FE (Eth)",
-    "data_file": None,
     "acquisition": "EI",
     "extra_sink": False,
     "constant_J_in": False,

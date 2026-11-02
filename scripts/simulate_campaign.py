@@ -1,3 +1,20 @@
+"""
+Run (or simulate) an active-learning campaign step by step, suggesting the
+next experiment and recording/plotting results as they come in.
+
+Extra YAML config keys (on top of carbondriver.config.default_config):
+
+run_name: ./sim_campaign
+property_name: "FE (Eth)"
+data_file: "../data.xlsx"
+sheets: null
+models: ["GP+Ph"]
+input_labels: ["Hotplate temperature (catalyst)", "Ink mass"]
+bounds: [[30, 20], [150, 100]]
+simulation: true  # if false, prompt for real measurements instead of interpolating
+n_replicates: 1
+"""
+
 from pathlib import Path
 
 import matplotlib.pyplot as plt

@@ -3,6 +3,20 @@ Assess NLL and Pearson R on held-out triplets as the training set grows.
 
 Mirrors run_experiments.py: same YAML config format, same combo expansion,
 and the same random triplet selection per run_idx across all combos.
+
+Extra YAML config keys (on top of carbondriver.config.default_config):
+
+run_name: out
+property_name: "FE (Eth)"
+data_file: "data.xlsx"
+dataset: gas  # or "bicarb"
+models: ["GP+Ph"]
+input_labels: ["Hotplate temperature (catalyst)", "Ink mass"]
+output_labels: ["FE (Eth)", "FE (CO)"]
+num_runs: 10
+runs: null  # e.g. [0, 1, 2] to override num_runs' range
+use_existing_results: false
+max_train: null  # cap on training-set size, defaults to all triplets
 """
 
 import argparse

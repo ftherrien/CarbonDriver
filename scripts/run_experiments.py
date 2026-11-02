@@ -1,6 +1,25 @@
 """
 External wrapper to run active learning experiments and generate plots.
 This runs the test suite multiple times, collecting data at each step.
+
+Extra YAML config keys (on top of carbondriver.config.default_config):
+
+run_name: out
+property_name: "FE (Eth)"
+data_file: "data.xlsx"
+dataset: gas  # or "bicarb"/"campaign"
+sheets: ["Sheet 1"]
+convert_to_zlt: true
+models: ["GP+Ph"]
+input_labels: ["Hotplate temperature (catalyst)", "Ink mass"]
+output_labels: ["FE (Eth)", "FE (CO)"]
+num_runs: 10
+runs: null  # e.g. [0, 1, 2] to override num_runs' range
+use_existing_results: false
+initial_triplets: null  # "init" for dataset="campaign", else a list of ids
+k_step: 9 # Number of steps to display average property value
+verify_order: false
+with_replacement: false
 """
 
 import argparse
@@ -155,6 +174,8 @@ def plot_candidates_parity(
     fig.suptitle("Candidate parity plot")
     fig.tight_layout()
     plt.show()
+
+    breakpoint()
 
 
 def run_active_learning_experiment(
