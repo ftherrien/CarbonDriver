@@ -16,6 +16,7 @@ from .config import default_config
 from .llm import llm_suggest
 from .models import (
     MODELED_QUANTITIES,
+    SPECIAL_FEATURES,
     BoTorchGP,
     MLPModel,
     MultitaskGPhysModel,
@@ -233,6 +234,11 @@ class GDEOptimizer:
 
         if len(self.input_labels) < len(self.all_input_labels):
             warnings.warn(f"Some input labels have no variation in the dataset and will be ignored: {set(self.all_input_labels) - set(self.input_labels)}")
+
+            for label in set(self.all_input_labels) - set(self.input_labels):
+                if label in SPECIAL_FEATURES and self.config.get(label, None) is None:
+                    self.config[label] = self.df[label].unique()[0]
+            
 
     def get_predictor(self) -> Tuple[torch.nn.Module | BoTorchGP, pd.DataFrame]:
         """
