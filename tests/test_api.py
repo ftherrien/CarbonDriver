@@ -53,6 +53,14 @@ test_params = [
     ("MLP", {"variance_scaling": False}),
 ]
 
+test_constant = [
+    # Basic tests with default config for all models
+    ("GP", False),
+    ("Ph", False),
+    ("GP", True),
+    ("Ph", True),
+]
+
 
 @pytest.mark.parametrize("model_type,config_overrides", test_params)
 def test_gde_optimizer_within(model_type, config_overrides, check_values, update_values):
@@ -92,7 +100,6 @@ def test_gde_optimizer_within(model_type, config_overrides, check_values, update
             check_values, update_values,
         )
 
-
 @pytest.mark.parametrize("model_type,config_overrides", test_params)
 def test_gde_optimizer_free(model_type, config_overrides, check_values, update_values):
     from carbondriver import GDEOptimizer
@@ -123,6 +130,42 @@ def test_gde_optimizer_free(model_type, config_overrides, check_values, update_v
             check_values, update_values,
         )
 
+@pytest.mark.parametrize("model_type,step", test_constant)
+def test_constant_inputs(model_type, step, check_values, update_values):
+    from carbondriver import GDEOptimizer
+    from carbondriver.loaders import load_gas_data
+
+    df, current_density = load_gas_data(data_path)
+
+    df["zero_eps_thickness"] = 1e-6  # constant input
+    
+    # Merge base config with overrides
+    config = {"current_density": current_density, "torch_seed": SEED}
+
+    gde = GDEOptimizer(model_type, acquisition="UCB", config=config, output_dir="./tmp_test_out"
+    )
+
+    df_train = df.iloc[:12]
+    df_explore = df.iloc[12:]
+
+    if step:
+        ei, pick = gde.step_within_data(df_train, df_explore)
+        pick = int(pick)
+    else:
+        ei, pick = gde.step(df_train)
+        pick = pick.to_dict()
+        
+    print(f"First pick ({model_type}):", ei, pick)
+
+    if model_type != "LLM":
+        _check_or_update(
+            f"constant_inputs|{model_type}|{step}",
+            {"ei": ei, "pick": pick},
+            check_values, update_values,
+        )
+
 
 if __name__ == "__main__":
     test_gde_optimizer_free("Ph", {"system_phase": "liquid"})
+
+    
