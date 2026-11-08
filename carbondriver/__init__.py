@@ -238,7 +238,7 @@ class GDEOptimizer:
             for label in set(self.all_input_labels) - set(self.input_labels):
                 if label in SPECIAL_FEATURES and self.config.get(label, None) is None:
                     self.config[label] = self.df[label].unique()[0]
-            
+
 
     def get_predictor(self) -> Tuple[torch.nn.Module | BoTorchGP, pd.DataFrame]:
         """
@@ -274,8 +274,8 @@ class GDEOptimizer:
                 config=self.config,
                 n_inputs=len(self.input_labels),
                 system_phase=system_phase,
-                means=self._means,
-                stds=self._stds,
+                means=self._means[self.input_labels],
+                stds=self._stds[self.input_labels],
                 output_labels=self.output_labels,
             )
 
@@ -309,8 +309,8 @@ class GDEOptimizer:
                     dropout=self.config.get("dropout", 0.1),
                     n_inputs=len(self.input_labels),
                     system_phase=system_phase,
-                    means=self._means,
-                    stds=self._stds,
+                    means=self._means[self.input_labels],
+                    stds=self._stds[self.input_labels],
                     output_labels=self.output_labels,
                 )
 
