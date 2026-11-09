@@ -155,12 +155,12 @@ def test_constant_inputs(model_type, step, check_values, update_values):
         ei, pick = gde.step(df_train)
         pick = pick.to_dict()
         
-    print(f"First pick ({model_type}):", ei, pick)
+    print(f"First pick ({model_type}):", float(ei), pick)
 
     if model_type != "LLM":
         _check_or_update(
             f"constant_inputs|{model_type}|{step}",
-            {"ei": ei, "pick": pick},
+            {"ei": float(ei), "pick": pick},
             check_values, update_values,
         )
 

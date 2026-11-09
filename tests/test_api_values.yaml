@@ -1,143 +1,178 @@
 within|GP+Ph|{}:
-  ei1: 0.0637669563293457
-  pick1: 71
-  ei2: 0.11090914160013199
+  ei1: 0.005061720963567495
+  pick1: 69
+  ei2: 0.09284516423940659
   pick2: 7
 free|GP+Ph|{}:
-  ei: 0.045191582292318344
+  ei: 0.003884874749928713
   pick:
     AgCu Ratio: 0.0
-    Naf vol (ul): 1799.9999855242593
-    Sust vol (ul): -2.2473136255030113e-05
+    Naf vol (ul): 55.45947584559133
+    Sust vol (ul): 1799.9999855242593
     zero_eps_thickness: 4.251139237591334e-06
-    Catalyst mass loading: 18.299999386658826
+    Catalyst mass loading: 15.954244810169738
 within|GP|{}:
-  ei1: 0.010860620066523552
+  ei1: 0.014989531598985195
   pick1: 7
   ei2: 0.002641613595187664
   pick2: 62
 free|GP|{}:
-  ei: 0.0008807771955616772
+  ei: 0.0009168709511868656
   pick:
     AgCu Ratio: 0.0
     Naf vol (ul): 1799.9999855242593
     Sust vol (ul): -2.2473136255030113e-05
-    zero_eps_thickness: 4.251139237591334e-06
-    Catalyst mass loading: 18.299999386658826
+    zero_eps_thickness: 5.984295927256079e-06
+    Catalyst mass loading: 13.000000056552615
 within|Ph|{}:
-  ei1: 0.17438192665576935
-  pick1: 62
-  ei2: 0.20527136325836182
-  pick2: 57
+  ei1: 0.1626928448677063
+  pick1: 7
+  ei2: 0.5154528021812439
+  pick2: 62
 free|Ph|{}:
-  ei: 0.3218666613101959
+  ei: 0.3600143492221832
   pick:
     AgCu Ratio: 0.0
-    Naf vol (ul): -2.2473136255030113e-05
+    Naf vol (ul): 646.5367429632167
     Sust vol (ul): 1799.9999855242593
-    zero_eps_thickness: 5.7254426620739276e-06
-    Catalyst mass loading: 15.550864866444186
+    zero_eps_thickness: 4.29416050062534e-06
+    Catalyst mass loading: 18.299999386658826
 within|MLP|{}:
-  ei1: 0.04084693640470505
-  pick1: 42
-  ei2: 0.018635336309671402
+  ei1: 0.032726336270570755
+  pick1: 43
+  ei2: 0.032658934593200684
   pick2: 84
 free|MLP|{}:
-  ei: 0.07555784285068512
+  ei: 0.07271146029233932
   pick:
     AgCu Ratio: 0.0
-    Naf vol (ul): 970.6898653826455
-    Sust vol (ul): 1326.8711487844917
-    zero_eps_thickness: 4.4636558023635835e-06
-    Catalyst mass loading: 17.481051167140283
+    Naf vol (ul): 1043.5743094856632
+    Sust vol (ul): 684.7514734627754
+    zero_eps_thickness: 5.484710422143276e-06
+    Catalyst mass loading: 15.413970655207716
 'within|Ph|{''system_phase'': ''liquid''}':
-  ei1: 0.057363223284482956
+  ei1: 0.046316958963871
   pick1: 42
   ei2: 0.04685194417834282
   pick2: 5
 'free|Ph|{''system_phase'': ''liquid''}':
-  ei: 0.07868024706840515
+  ei: 0.09815149009227753
   pick:
     AgCu Ratio: 0.0
-    Naf vol (ul): 957.7105822737373
-    Sust vol (ul): 1251.0709349119647
-    zero_eps_thickness: 4.639797767412647e-06
-    Catalyst mass loading: 16.853814077104463
+    Naf vol (ul): 1591.82958169515
+    Sust vol (ul): 613.2718413469702
+    zero_eps_thickness: 4.4827502509526235e-06
+    Catalyst mass loading: 16.563826499273993
 'within|GP+Ph|{''system_phase'': ''liquid''}':
-  ei1: 0.036858394742012024
-  pick1: 41
-  ei2: 0.07200580835342407
+  ei1: 0.025889065116643906
+  pick1: 39
+  ei2: 0.06840425729751587
   pick2: 84
 'free|GP+Ph|{''system_phase'': ''liquid''}':
-  ei: 0.0136946402490139
+  ei: 0.020246509462594986
   pick:
     AgCu Ratio: 0.0
-    Naf vol (ul): 1695.4202979059423
-    Sust vol (ul): 0.0002837810736764368
-    zero_eps_thickness: 4.342090138625437e-06
-    Catalyst mass loading: 18.02527780697864
+    Naf vol (ul): 543.3140486083598
+    Sust vol (ul): 643.8066780902739
+    zero_eps_thickness: 4.251139237591334e-06
+    Catalyst mass loading: 14.69803995950436
 'within|MLP|{''acquisition'': ''EI''}':
-  ei1: 0.04084693640470505
-  pick1: 42
-  ei2: 0.018635336309671402
+  ei1: 0.032726336270570755
+  pick1: 43
+  ei2: 0.032658934593200684
   pick2: 84
 'free|MLP|{''acquisition'': ''EI''}':
-  ei: 0.07555784285068512
+  ei: 0.07271146029233932
   pick:
     AgCu Ratio: 0.0
-    Naf vol (ul): 970.6898653826455
-    Sust vol (ul): 1326.8711487844917
-    zero_eps_thickness: 4.4636558023635835e-06
-    Catalyst mass loading: 17.481051167140283
+    Naf vol (ul): 1043.5743094856632
+    Sust vol (ul): 684.7514734627754
+    zero_eps_thickness: 5.484710422143276e-06
+    Catalyst mass loading: 15.413970655207716
 'within|MLP|{''acquisition'': ''logEI''}':
-  ei1: -3.197923421859741
-  pick1: 42
-  ei2: -3.9826955795288086
+  ei1: -3.4195752143859863
+  pick1: 43
+  ei2: -3.4216365814208984
   pick2: 84
 'free|MLP|{''acquisition'': ''logEI''}':
-  ei: -2.5829062461853027
+  ei: -2.3785011768341064
   pick:
     AgCu Ratio: 0.0
-    Naf vol (ul): 970.8245980941413
-    Sust vol (ul): 1327.004981874246
-    zero_eps_thickness: 4.463639747105928e-06
-    Catalyst mass loading: 17.48109912238682
+    Naf vol (ul): 940.7128036896818
+    Sust vol (ul): 640.1732877137116
+    zero_eps_thickness: 5.39151978599625e-06
+    Catalyst mass loading: 15.873580965958284
 'within|MLP|{''acquisition'': ''PI''}':
-  ei1: 0.628990650177002
-  pick1: 42
-  ei2: 0.3098575472831726
+  ei1: 0.6354761123657227
+  pick1: 43
+  ei2: 0.37060511112213135
   pick2: 84
 'free|MLP|{''acquisition'': ''PI''}':
-  ei: 0.6840454936027527
+  ei: 0.6025437712669373
   pick:
     AgCu Ratio: 0.0
-    Naf vol (ul): 799.1430674461179
-    Sust vol (ul): 703.476875112233
-    zero_eps_thickness: 5.1137466398147425e-06
-    Catalyst mass loading: 15.593571953343057
+    Naf vol (ul): 781.0468818193075
+    Sust vol (ul): 659.363166939577
+    zero_eps_thickness: 5.1206158831365e-06
+    Catalyst mass loading: 15.748289096665331
 'within|MLP|{''acquisition'': ''UCB''}':
-  ei1: 0.35901573300361633
-  pick1: 42
-  ei2: 0.31338396668434143
+  ei1: 0.34015071392059326
+  pick1: 43
+  ei2: 0.35185110569000244
   pick2: 84
 'free|MLP|{''acquisition'': ''UCB''}':
-  ei: 0.4472813010215759
+  ei: 0.4547381103038788
   pick:
     AgCu Ratio: 0.0
-    Naf vol (ul): 921.938999519384
-    Sust vol (ul): 692.1749941635148
-    zero_eps_thickness: 5.508869824465352e-06
-    Catalyst mass loading: 15.566357697549117
+    Naf vol (ul): 1083.444645459062
+    Sust vol (ul): 144.74230162110155
+    zero_eps_thickness: 5.543324567415035e-06
+    Catalyst mass loading: 16.359317680376382
 'within|MLP|{''variance_scaling'': False}':
-  ei1: 0.03379245102405548
-  pick1: 42
-  ei2: 0.0054270182736217976
+  ei1: 0.034938640892505646
+  pick1: 43
+  ei2: 0.005613055545836687
   pick2: 84
 'free|MLP|{''variance_scaling'': False}':
-  ei: 0.03285450115799904
+  ei: 0.03273158147931099
   pick:
     AgCu Ratio: 0.0
-    Naf vol (ul): 998.1005550778917
-    Sust vol (ul): 651.9600169290222
-    zero_eps_thickness: 5.028007426767361e-06
-    Catalyst mass loading: 15.964703580302675
+    Naf vol (ul): 740.665088155909
+    Sust vol (ul): 500.33140422620727
+    zero_eps_thickness: 4.912011313908041e-06
+    Catalyst mass loading: 15.618733548219229
+within|BoTorch-GP|{}:
+  ei1: 0.02895180508494377
+  pick1: 40
+  ei2: 0.01996621862053871
+  pick2: 88
+free|BoTorch-GP|{}:
+  ei: 0.02177516184747219
+  pick:
+    AgCu Ratio: 0.0
+    Naf vol (ul): 1799.9999855242593
+    Sust vol (ul): 1799.9999855242593
+    zero_eps_thickness: 5.984295927256079e-06
+    Catalyst mass loading: 18.299999386658826
+constant_inputs|GP|False:
+  ei: 0.2358851581811905
+  pick:
+    AgCu Ratio: 0.0
+    Naf vol (ul): 900.0000215486604
+    Sust vol (ul): 1799.9999851927091
+    zero_eps_thickness: 9.999999974752427e-07
+    Catalyst mass loading: 14.00000001025901
+constant_inputs|Ph|False:
+  ei: 0.42095044255256653
+  pick:
+    AgCu Ratio: 0.0
+    Naf vol (ul): -8.75515416964845e-06
+    Sust vol (ul): 1799.9999851927091
+    zero_eps_thickness: 9.999999974752427e-07
+    Catalyst mass loading: 18.20241761589322
+constant_inputs|GP|True:
+  ei: 0.24718570709228516
+  pick: 88
+constant_inputs|Ph|True:
+  ei: 0.44167858362197876
+  pick: 7
