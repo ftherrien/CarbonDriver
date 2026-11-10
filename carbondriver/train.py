@@ -414,7 +414,7 @@ def train_GP_model(
             std_test = predictions.stddev
         return mean_test, std_test
 
-    return stats, predict, BoTorchGP(model), likelihood
+    return stats, predict, BoTorchGP(model, likelihood), likelihood
 
 
 def train_BoTorch_GP_model(
@@ -619,4 +619,4 @@ def train_GP_Ph_model(
             std_test = predictions.stddev
         return mean_test, std_test
 
-    return stats, predict, BoTorchGP(model), model.likelihood
+    return stats, predict, BoTorchGP(model, model.likelihood), model.likelihood

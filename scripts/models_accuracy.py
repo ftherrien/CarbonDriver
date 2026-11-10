@@ -86,7 +86,10 @@ def assess_run(
         X_eval, y_eval = gde._get_data_tensors(data=df_eval)
 
         with torch.no_grad():
-            posterior = predictor.posterior(X_eval.unsqueeze(1))
+            # observation_noise=True: score against actual noisy measurements, not
+            # the denoised latent function (EnsembleModel ignores this kwarg, since
+            # noise is already folded into its calibrated variance_scaler).
+            posterior = predictor.posterior(X_eval.unsqueeze(1), observation_noise=True)
             # botorch posteriors have shape (..., q=1, n_out); squeeze q dim
             mu = posterior.mean.squeeze(-2)  # (n_eval_pts, n_out)
             var = posterior.variance.squeeze(-2)  # (n_eval_pts, n_out)

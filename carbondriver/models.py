@@ -306,12 +306,18 @@ class EnsPredictor(EnsembleModel):
 class BoTorchGP(GPyTorchModel):
     """Wrapper for GPyTorch models to work with BoTorch acquisition functions."""
 
-    def __init__(self, model: gpytorch.models.ExactGP) -> None:
+    def __init__(
+        self,
+        model: gpytorch.models.ExactGP,
+        likelihood: Optional[gpytorch.likelihoods.Likelihood] = None,
+    ) -> None:
         """
         :param model: GPyTorch ExactGP model
+        :param likelihood: trained likelihood, needed for posterior(observation_noise=True)
         """
         super().__init__()
         self.model = model
+        self.likelihood = likelihood
         self._num_outputs = 1
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
