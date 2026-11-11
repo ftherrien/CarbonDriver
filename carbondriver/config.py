@@ -38,4 +38,5 @@ default_config = {
     "lr": 1e-3,
     "tol": 1e-5,
     "early_stopping": False,
+    "q": 1,  # acquisition batch size; only q=1 is currently implemented
 }
