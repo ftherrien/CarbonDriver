@@ -295,8 +295,8 @@ if __name__ == "__main__":
                 ax.set_xlabel("# training triplets")
                 ax.set_ylabel(metric_label)
                 ax.set_ylim(
-                    top=0 if metric_key == "nll" else 1,
-                    bottom=0 if metric_key == "corr" else -1,
+                    top=1 if metric_key == "corr" else None,
+                    bottom=0 if metric_key == "corr" else None,
                 )
                 if row == 0 and col == 0:
                     ax.legend(title="Config", fontsize=7, loc="best")
