@@ -339,6 +339,7 @@ class GDEOptimizer:
                 lr=self.config.get("lr", 1e-3),
                 tol=self.config.get("tol", 1e-5),
                 early_stopping=self.config.get("early_stopping", False),
+                q=self.config.get("q", 1),
             )
 
         return model, stats
@@ -513,7 +514,7 @@ class GDEOptimizer:
         next_experiment, _ = optimize_acqf(
             acq_function=AF_q,
             bounds=opt_bounds,
-            q=1,
+            q=self.config.get("q", 1),
             num_restarts=self.config.get("num_restarts", 100),
             raw_samples=self.config.get("raw_samples", 1000),
             options={"ftol": 1e-12, "factr": None},  # See note on next line
