@@ -335,11 +335,13 @@ class GDEOptimizer:
                 num_models=self.config.get("num_models", 50),
                 batch_fraction=self.config.get("batch_fraction", 0.5),
                 variance_scaling=self.config.get("variance_scaling", True),
+                out_of_bag_scaling=self.config.get("out_of_bag_scaling", False),
                 per_output_scaling=self.config.get("per_output_scaling", False),
                 lr=self.config.get("lr", 1e-3),
                 tol=self.config.get("tol", 1e-5),
                 early_stopping=self.config.get("early_stopping", False),
                 q=self.config.get("q", 1),
+                allow_fractional_scaling=self.config.get("allow_fractional_scaling", True),
             )
 
         return model, stats

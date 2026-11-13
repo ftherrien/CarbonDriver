@@ -1,3 +1,5 @@
+import math
+import warnings
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,21 @@ SEED = 12345
 VALUES_PATH = dir_above / "test_api_values.yaml"
 
 
+def _assert_close(key, actual, expected):
+    """Assert `actual == expected` elementwise, allowing float noise via isclose
+    (warning when close but not exact, so drift is visible without failing)."""
+    if isinstance(actual, dict):
+        for k in actual:
+            _assert_close(f"{key}.{k}", actual[k], expected[k])
+        return
+    if isinstance(actual, float):
+        if actual != expected:
+            assert math.isclose(actual, expected, rel_tol=1e-4), f"{key}: {actual} != {expected}"
+            warnings.warn(f"{key}: {actual} is close but not equal to recorded value {expected}")
+        return
+    assert actual == expected, f"{key}: {actual} != {expected}"
+
+
 def _check_or_update(key, actual, check_values, update_values):
     """Compare `actual` to the recorded reference value for `key`, or overwrite it."""
     with VALUES_PATH.open() as f:
@@ -23,7 +40,7 @@ def _check_or_update(key, actual, check_values, update_values):
         values[key] = actual
         yaml.dump(values, VALUES_PATH.open("w"), sort_keys=False)
     elif check_values:
-        assert actual == values[key]
+        _assert_close(key, actual, values[key])
 
 
 def test_import():

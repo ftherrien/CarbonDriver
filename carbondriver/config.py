@@ -32,6 +32,7 @@ default_config = {
     "batch_fraction": 0.5,
     "dropout": 0.1,
     "variance_scaling": True,
+    "out_of_bag_scaling": False,
     "per_output_scaling": False,
     "ph_frac": 0.5,
     "zero_eps_thickness_bounds": [1e-6, 1e-5],
@@ -39,4 +40,5 @@ default_config = {
     "tol": 1e-5,
     "early_stopping": False,
     "q": 1,  # acquisition batch size; only q=1 is currently implemented
+    "allow_fractional_scaling": True,
 }
