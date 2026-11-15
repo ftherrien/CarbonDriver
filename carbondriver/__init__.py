@@ -568,7 +568,7 @@ class GDEOptimizer:
                         "augmenting the dataset with the matching point(s) and retraining."
                     )
                     return self.step(
-                        self.df.loc[duplicate_mask], bounds=bounds, _repeat=_repeat + 1
+                        self.df.loc[duplicate_mask].drop_duplicates(), bounds=bounds, _repeat=_repeat + 1
                     )
                 check_random_fallback(
                     self.config,
@@ -781,7 +781,7 @@ class GDEOptimizer:
                         "augmenting the dataset and retraining."
                     )
                     return self.step_within_data(
-                        self.df.loc[duplicate_mask],
+                        self.df.loc[duplicate_mask].drop_duplicates(),
                         possible_data,
                         return_metrics=return_metrics,
                         _repeat=_repeat + 1,

@@ -175,8 +175,6 @@ def plot_candidates_parity(
     fig.tight_layout()
     plt.show()
 
-    breakpoint()
-
 
 def run_active_learning_experiment(
     model_name: str, run_idx: int, config: dict, init_triplets: Optional[list] = None
@@ -265,6 +263,7 @@ def run_active_learning_experiment(
             best_ei, best_triplet, metrics = gde.step_within_data(
                 train_df, full_withheld_df, return_metrics=True
             )
+            print(f"Trained on {gde.df.shape[0]} points, evaluated {withheld_df.shape[0]} candidates")
 
         if config.get("verify_order", False):
             # This should only be used when checking a campaign that used the exact same params as this gde object
