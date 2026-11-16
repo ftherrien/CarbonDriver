@@ -603,7 +603,7 @@ class GDEOptimizer:
 
         X, _ = self._get_data_tensors(data=x)
 
-        posterior = self.predictor.posterior(X)
+        posterior = self.predictor.posterior(X.unsqueeze(1))
         pred_mean = posterior.mean.squeeze(1).detach().numpy()
         pred_std = posterior.variance.sqrt().squeeze(1).detach().numpy()
 
