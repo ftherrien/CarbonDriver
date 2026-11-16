@@ -16,9 +16,10 @@ from botorch.acquisition.monte_carlo import (
 )
 from botorch.acquisition.objective import GenericMCObjective, ScalarizedPosteriorTransform
 from botorch.models.multitask import MultiTaskGP
+from botorch.sampling.index_sampler import IndexSampler
 from botorch.sampling.normal import SobolQMCNormalSampler
 
-from .models import BoTorchGP
+from .models import BoTorchGP, EnsPredictor
 
 MC_EQUIVALENCE = {
     "EI": qExpectedImprovement,
@@ -87,7 +88,10 @@ def get_acquisition_function(opt, predictor: torch.nn.Module, X_pending: torch.T
     # The q-batch classes have no `maximize` flag
     sign = 1.0 if opt.maximize else -1.0
     objective = GenericMCObjective(lambda samples, X=None: sign * samples.squeeze(-1))
-    sampler = SobolQMCNormalSampler(sample_shape=torch.Size([opt.config.get("mc_samples", 256)]))
+    # EnsemblePosterior needs IndexSampler (sampling over ensemble members);
+    # GP-based posteriors need SobolQMCNormalSampler (reparameterized Gaussian samples).
+    sampler_cls = IndexSampler if isinstance(predictor, EnsPredictor) else SobolQMCNormalSampler
+    sampler = sampler_cls(sample_shape=torch.Size([opt.config.get("mc_samples", 256)]))
     kwargs = dict(
         sampler=sampler, objective=objective, posterior_transform=posterior_transform, X_pending=X_pending
     )

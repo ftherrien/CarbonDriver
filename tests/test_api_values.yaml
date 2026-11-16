@@ -1,23 +1,23 @@
 within|GP+Ph|{}:
   ei1: 0.005061720963567495
   pick1: 69
-  ei2: 0.09284516423940659
+  ei2: 0.09284497052431107
   pick2: 7
 free|GP+Ph|{}:
-  ei: 0.003884874749928713
+  ei: 0.003885068232193589
   pick:
     AgCu Ratio: 0.0
-    Naf vol (ul): 55.45947584559133
+    Naf vol (ul): 55.88555201520296
     Sust vol (ul): 1799.9999855242593
     zero_eps_thickness: 4.251139237591334e-06
-    Catalyst mass loading: 15.954244810169738
+    Catalyst mass loading: 15.954218589741574
 within|GP|{}:
-  ei1: 0.014989531598985195
+  ei1: 0.014989567920565605
   pick1: 7
   ei2: 0.002641613595187664
   pick2: 62
 free|GP|{}:
-  ei: 0.0009168709511868656
+  ei: 0.0009168694377876818
   pick:
     AgCu Ratio: 0.0
     Naf vol (ul): 1799.9999855242593
@@ -69,13 +69,13 @@ free|MLP|{}:
   ei2: 0.06840425729751587
   pick2: 84
 'free|GP+Ph|{''system_phase'': ''liquid''}':
-  ei: 0.020246509462594986
+  ei: 0.02025279961526394
   pick:
     AgCu Ratio: 0.0
-    Naf vol (ul): 543.3140486083598
-    Sust vol (ul): 643.8066780902739
+    Naf vol (ul): 542.0291590704581
+    Sust vol (ul): 645.6265075989851
     zero_eps_thickness: 4.251139237591334e-06
-    Catalyst mass loading: 14.69803995950436
+    Catalyst mass loading: 14.698690862263893
 'within|MLP|{''acquisition'': ''EI''}':
   ei1: 0.02639872208237648
   pick1: 43
@@ -142,12 +142,12 @@ free|MLP|{}:
     zero_eps_thickness: 4.912011313908041e-06
     Catalyst mass loading: 15.618733548219229
 within|BoTorch-GP|{}:
-  ei1: 0.028833039104938507
+  ei1: 0.02895180508494377
   pick1: 40
-  ei2: 0.01900658756494522
+  ei2: 0.01996621862053871
   pick2: 88
 free|BoTorch-GP|{}:
-  ei: 0.024176819249987602
+  ei: 0.02177516184747219
   pick:
     AgCu Ratio: 0.0
     Naf vol (ul): 1799.9999855242593
@@ -171,7 +171,7 @@ constant_inputs|Ph|False:
     zero_eps_thickness: 9.999999974752427e-07
     Catalyst mass loading: 17.881984712318598
 constant_inputs|GP|True:
-  ei: 0.24718570709228516
+  ei: 0.24718572199344635
   pick: 88
 constant_inputs|Ph|True:
   ei: 0.39919018745422363
