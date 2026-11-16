@@ -373,14 +373,12 @@ class GDEOptimizer:
         self,
         new_data: pd.DataFrame,
         bounds: Optional[torch.Tensor] = None,
-        _repeat: int = 0,
     ) -> Tuple[torch.Tensor, pd.Series]:
         """
         Perform a step in the optimization process using the new data and bounds.
 
         :param new_data: New data to be added to the training set. Do not input data that was already given to the object, only new data.
         :param bounds: Optional bounds for the optimization (default: inferred from data)
-        :param _repeat: internal counter tracking retries when the proposed candidate duplicates an existing point
         :returns: tuple of (acquisition_function_value, next_experiment_parameters)
         """
 
@@ -482,8 +480,6 @@ class GDEOptimizer:
                 raise
         self.predictor = predictor
 
-        AF = get_acquisition_function(self, predictor)
-
         # Select the output column index for the quantity by name from the last two columns
 
         try:
@@ -510,66 +506,64 @@ class GDEOptimizer:
         # print(f"[step] normalized bounds min: {bounds_norm[0].tolist()} max: {bounds_norm[1].tolist()}")
         opt_bounds = bounds_norm.float()
 
-        def AF_q(x):
-            return select_acquisition_target(AF(x), target_idx)
+        self.i += 1
 
-        next_experiment, _ = optimize_acqf(
-            acq_function=AF_q,
-            bounds=opt_bounds,
-            q=self.config.get("q", 1),
-            num_restarts=self.config.get("num_restarts", 100),
-            raw_samples=self.config.get("raw_samples", 1000),
-            options={"ftol": 1e-12, "factr": None},  # See note on next line
-        )
-        # factr sets the same value as ftol, but needs to be set explicitely
-        # to None when ftol is set (which is weird)
+        # If the candidate duplicates an existing point, mark it as a pending
+        # (already-committed) point and re-optimize a q-batch acquisition
+        # function conditioned on it, up to max_attempts times, then fall back
+        # to a random candidate.
+        max_repeats = self.config.get("max_attempts", 3)
+        X_pending = None
+        for attempt in range(max_repeats + 1):
+            AF = get_acquisition_function(self, predictor, X_pending=X_pending)
 
-        # Denormalize the candidate, mean=0 and std=1 if not normalized.
-        x_candidate = next_experiment * stds + means
+            def AF_q(x):
+                return select_acquisition_target(AF(x), target_idx)
 
-        if _repeat == 0:
-            self.i += 1
+            next_experiment, _ = optimize_acqf(
+                acq_function=AF_q,
+                bounds=opt_bounds,
+                q=1 if X_pending is not None else self.config.get("q", 1),
+                num_restarts=self.config.get("num_restarts", 100),
+                raw_samples=self.config.get("raw_samples", 1000),
+                options={"ftol": 1e-12, "factr": None},  # See note on next line
+            )
+            # factr sets the same value as ftol, but needs to be set explicitely
+            # to None when ftol is set (which is weird)
 
-        # Evaluate AF at the (normalized) next point for returning EI value
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message="Output shape checks failed!")
-            ei_val = AF_q(next_experiment)
+            # Denormalize the candidate, mean=0 and std=1 if not normalized.
+            x_candidate = next_experiment * stds + means
 
-        candidate = pd.Series(
-            x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
-        )
+            # Evaluate AF at the (normalized) next point for returning EI value
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="Output shape checks failed!")
+                ei_val = AF_q(next_experiment)
 
-        if len(self.all_input_labels) > len(self.input_labels):
-            warnings.warn(f"The suggestions for the following input labels are randomly generated, since they were constant: {[label for label, mask in zip(self.all_input_labels, variable_input_labels_mask) if not mask]}")
+            candidate = pd.Series(
+                x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
+            )
 
-        candidate = pd.concat([candidate, random_candidate([label for label, mask in zip(self.all_input_labels, variable_input_labels_mask) if not mask], raw_bounds[:, ~variable_input_labels_mask])])
+            if len(self.all_input_labels) > len(self.input_labels):
+                warnings.warn(f"The suggestions for the following input labels are randomly generated, since they were constant: {[label for label, mask in zip(self.all_input_labels, variable_input_labels_mask) if not mask]}")
 
-        candidate = candidate[self.all_input_labels]
+            candidate = pd.concat([candidate, random_candidate([label for label, mask in zip(self.all_input_labels, variable_input_labels_mask) if not mask], raw_bounds[:, ~variable_input_labels_mask])])
 
-        # If the candidate duplicates an existing point, feed the matching point(s)
-        # back in as "new" data (data augmentation) and retrain, up to
-        # max_attempts times, then fall back to a random candidate.
-        duplicate_mask = np.isclose(
-            candidate,
-            self.df.loc[:, self.all_input_labels],
-            rtol=self.config.get("similarity_tolerance", 1e-5),
-        ).all(axis=1)
-        if duplicate_mask.any():
+            candidate = candidate[self.all_input_labels]
+
+            duplicate_mask = np.isclose(
+                candidate,
+                self.df.loc[:, self.all_input_labels],
+                rtol=self.config.get("similarity_tolerance", 1e-5),
+            ).all(axis=1)
+            if not duplicate_mask.any():
+                break
             if self.config.get("allow_repeated_experiments", False):
                 warnings.warn(
                     "Candidate duplicates an existing point; returning it as-is "
                     "because allow_repeated_experiments is True."
                 )
-            else:
-                max_repeats = self.config.get("max_attempts", 3)
-                if _repeat < max_repeats:
-                    warnings.warn(
-                        f"Candidate duplicates an existing point (retry {_repeat + 1}/{max_repeats}); "
-                        "augmenting the dataset with the matching point(s) and retraining."
-                    )
-                    return self.step(
-                        self.df.loc[duplicate_mask].drop_duplicates(), bounds=bounds, _repeat=_repeat + 1
-                    )
+                break
+            if attempt == max_repeats:
                 check_random_fallback(
                     self.config,
                     f"Candidate still duplicates an existing point after {max_repeats} retries.",
@@ -578,6 +572,12 @@ class GDEOptimizer:
                 ei_val = self.acquisition_value(candidate.to_frame().T)[
                     "acquisition"
                 ].iloc[0]
+                break
+            warnings.warn(
+                f"Candidate duplicates an existing point (retry {attempt + 1}/{max_repeats}); "
+                "re-optimizing with it marked as a pending (already-queried) point."
+            )
+            X_pending = next_experiment if X_pending is None else torch.cat([X_pending, next_experiment], dim=0)
 
         if self.config["make_plots"] and len(self.all_input_labels) == 2 and len(self.input_labels) == 2:
             plot_2d_debug(self, predictor, AF_q, raw_bounds, candidate)
@@ -621,7 +621,6 @@ class GDEOptimizer:
         new_data: pd.DataFrame,
         possible_data: pd.DataFrame,
         return_metrics: bool = False,
-        _repeat: int = 0,
     ) -> Tuple[float, int] | Tuple[float, int, dict]:
         """
         Selects the best next point from a set of candidates (possible_data) considering the new data (new_data) and the existing data (if any).
@@ -629,7 +628,6 @@ class GDEOptimizer:
         :param new_data: New data to be added to the training set. Do not input data that was already given to the object, only new data.
         :param possible_data: DataFrame of candidate points to select from
         :param return_metrics: whether to return training metrics (nll, loss)
-        :param _repeat: internal counter tracking retries when the selected point duplicates an existing point
         :returns: (best_ei_value, best_index) or (best_ei_value, best_index, metrics) if return_metrics=True
         """
 
@@ -726,66 +724,62 @@ class GDEOptimizer:
 
         X, _ = self._get_data_tensors(data=possible_data)
 
-        AF = get_acquisition_function(self, predictor)
-
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message="Output shape checks failed!")
-            scores = AF(X.unsqueeze(1))
-
-        if isinstance(scores, torch.Tensor) and (
-            scores.dim() == 0
-            or (scores.dim() == 1 and scores.shape[0] != len(possible_data))
-        ):
-            scores = scores.unsqueeze(0)
-
-        if _repeat == 0:
-            self.i += 1
+        self.i += 1
 
         target_idx = self.output_labels.index(self.quantity)
 
-        if isinstance(scores, torch.Tensor):
-            if scores.dim() == 1:
-                target_scores = scores  # already one score per candidate
-            else:
-                if scores.shape[1] <= target_idx:
-                    raise RuntimeError(
-                        f"AF scores shape {tuple(scores.shape)} has no column {target_idx}"
-                    )
-                target_scores = scores[:, target_idx]
-        else:
-            raise RuntimeError("AF returned non-tensor scores, expected torch.Tensor")
-        print(f"Target scores :")
-        ts = possible_data.copy()
-        ts["AF Score"] = target_scores.tolist()
-        print(ts)
-        best_idx = int(target_scores.argmax().item())
-        best_df_index = possible_data.iloc[best_idx].name
-        best_ei = float(target_scores[best_idx].item())
+        # If the chosen candidate duplicates an existing point, mark it as a
+        # pending (already-committed) point and re-score with a q-batch
+        # acquisition function conditioned on it, up to max_attempts times,
+        # then fall back to a random candidate.
+        max_repeats = self.config.get("max_attempts", 3)
+        X_pending = None
+        for attempt in range(max_repeats + 1):
+            AF = get_acquisition_function(self, predictor, X_pending=X_pending)
 
-        duplicate_mask = np.isclose(
-            possible_data.loc[best_df_index, self.input_labels].astype(float),
-            self.df.loc[:, self.input_labels].astype(float),
-            rtol=1e-9,
-        ).all(axis=1)
-        if duplicate_mask.any():
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="Output shape checks failed!")
+                scores = AF(X.unsqueeze(1))
+
+            if isinstance(scores, torch.Tensor) and (
+                scores.dim() == 0
+                or (scores.dim() == 1 and scores.shape[0] != len(possible_data))
+            ):
+                scores = scores.unsqueeze(0)
+
+            if isinstance(scores, torch.Tensor):
+                if scores.dim() == 1:
+                    target_scores = scores  # already one score per candidate
+                else:
+                    if scores.shape[1] <= target_idx:
+                        raise RuntimeError(
+                            f"AF scores shape {tuple(scores.shape)} has no column {target_idx}"
+                        )
+                    target_scores = scores[:, target_idx]
+            else:
+                raise RuntimeError("AF returned non-tensor scores, expected torch.Tensor")
+            print(f"Target scores :")
+            ts = possible_data.copy()
+            ts["AF Score"] = target_scores.tolist()
+            print(ts)
+            best_idx = int(target_scores.argmax().item())
+            best_df_index = possible_data.iloc[best_idx].name
+            best_ei = float(target_scores[best_idx].item())
+
+            duplicate_mask = np.isclose(
+                possible_data.loc[best_df_index, self.input_labels].astype(float),
+                self.df.loc[:, self.input_labels].astype(float),
+                rtol=1e-9,
+            ).all(axis=1)
+            if not duplicate_mask.any():
+                break
             if self.config.get("allow_repeated_experiments", False):
                 warnings.warn(
                     "Chose a candidate already in the dataset; returning it as-is "
                     "because allow_repeated_experiments is True."
                 )
-            else:
-                max_repeats = self.config.get("max_attempts", 3)
-                if _repeat < max_repeats:
-                    warnings.warn(
-                        f"Chose a candidate already in the dataset (retry {_repeat + 1}/{max_repeats}); "
-                        "augmenting the dataset and retraining."
-                    )
-                    return self.step_within_data(
-                        self.df.loc[duplicate_mask].drop_duplicates(),
-                        possible_data,
-                        return_metrics=return_metrics,
-                        _repeat=_repeat + 1,
-                    )
+                break
+            if attempt == max_repeats:
                 check_random_fallback(
                     self.config,
                     f"Still chose a candidate already in the dataset after {max_repeats} retries.",
@@ -798,6 +792,12 @@ class GDEOptimizer:
                     if return_metrics
                     else (random_ei, random_idx)
                 )
+            warnings.warn(
+                f"Chose a candidate already in the dataset (retry {attempt + 1}/{max_repeats}); "
+                "re-scoring with it marked as a pending (already-queried) point."
+            )
+            pending_x = X[best_idx : best_idx + 1]
+            X_pending = pending_x if X_pending is None else torch.cat([X_pending, pending_x], dim=0)
 
         if self.config["make_plots"] and len(self.input_labels) == 2:
             all_points = pd.concat(
