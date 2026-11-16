@@ -26,6 +26,7 @@ default_config = {
     "similarity_tolerance": 1e-5,
     "max_attempts": 3,  # retries for LLM calls and for proposing a point already in the dataset
     "allow_repeated_experiments": False,  # if True, skip retries and return a candidate even if it duplicates an existing point
+    "mc_samples": 256,  # MC samples for the q-batch acquisition functions used on duplicate-candidate retries
     "num_restarts": 20,
     "raw_samples": 200,
     "num_models": 50,
