@@ -88,6 +88,7 @@ def get_acquisition_function(opt, predictor: torch.nn.Module, X_pending: torch.T
     # The q-batch classes have no `maximize` flag
     sign = 1.0 if opt.maximize else -1.0
     objective = GenericMCObjective(lambda samples, X=None: sign * samples.squeeze(-1))
+    objective._is_mo = len(opt.output_labels) > 1 and isinstance(predictor, EnsPredictor) # A bit hacky, but sets the objective to multi-output. Real solution is a generic posteriror transform that applies to ensemble and num_ouptut > 1.
     # EnsemblePosterior needs IndexSampler (sampling over ensemble members);
     # GP-based posteriors need SobolQMCNormalSampler (reparameterized Gaussian samples).
     sampler_cls = IndexSampler if isinstance(predictor, EnsPredictor) else SobolQMCNormalSampler
