@@ -3,6 +3,7 @@ from typing import Optional
 
 import pandas as pd
 import torch
+from tqdm import tqdm
 
 
 def plot_2d_debug(
@@ -12,7 +13,7 @@ def plot_2d_debug(
     raw_bounds: torch.Tensor,
     candidate: pd.Series,
     possible_data: Optional[pd.DataFrame] = None,
-    n: int = 10,
+    n: int = 40,
 ) -> None:
     """
     Debug-only visualization for 2D input spaces: pcolormesh of the acquisition
@@ -33,21 +34,27 @@ def plot_2d_debug(
     grid_norm = ((grid - means) / stds).float().unsqueeze(1)
     grid_norm.requires_grad_(True)
 
+    af = []
+    grad = []
+    mean = []
+    std = []
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="Output shape checks failed!")
-        af = AF_q(grid_norm)
-    af.sum().backward()
-    grad = grid_norm.grad.squeeze(1).reshape(n, n, -1)
-    af = af.detach().reshape(n, n)
-
-    posterior = predictor.posterior(grid_norm.detach())
-    mean = posterior.mean.view(n**2, -1)[:, target_idx].detach().reshape(n, n)
-    std = (
-        posterior.variance.sqrt()
-        .view(n**2, -1)[:, target_idx]
-        .detach()
-        .reshape(n, n)
-    )
+        print("Computing acquisition function and posterior over 2D grid...")
+        for batch in tqdm(grid_norm.split(grid_norm.shape[0] // 100, dim=0)):
+            af_tmp = AF_q(batch)
+            batch.retain_grad()
+            af_tmp.sum().backward()
+            af.append(af_tmp.detach())
+            grad.append(batch.grad.detach())
+            posterior = predictor.posterior(batch.detach())
+            mean.append(posterior.mean[:, target_idx].detach())
+            std.append(posterior.variance.sqrt()[:, target_idx].detach())
+            
+    af = torch.cat(af, dim=0).reshape(n, n)
+    grad = torch.cat(grad, dim=0).squeeze(1).reshape(n, n, -1)
+    mean = torch.cat(mean, dim=0).reshape(n, n)
+    std = torch.cat(std, dim=0).reshape(n, n)
 
     fig, ax = plt.subplots(ncols=3, figsize=(15, 4))
     for a, z, title in zip(ax, [af, mean, std], ["Acquisition", "Mean", "Std"]):
