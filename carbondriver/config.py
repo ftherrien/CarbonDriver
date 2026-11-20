@@ -26,16 +26,20 @@ default_config = {
     "similarity_tolerance": 1e-5,
     "max_attempts": 3,  # retries for LLM calls and for proposing a point already in the dataset
     "allow_repeated_experiments": False,  # if True, skip retries and return a candidate even if it duplicates an existing point
+    "mc_samples": 256,  # MC samples for the q-batch acquisition functions used on duplicate-candidate retries
     "num_restarts": 20,
     "raw_samples": 200,
     "num_models": 50,
     "batch_fraction": 0.5,
     "dropout": 0.1,
     "variance_scaling": True,
+    "out_of_bag_scaling": False,
     "per_output_scaling": False,
     "ph_frac": 0.5,
     "zero_eps_thickness_bounds": [1e-6, 1e-5],
     "lr": 1e-3,
     "tol": 1e-5,
     "early_stopping": False,
+    "q": 1,  # acquisition batch size; only q=1 is currently implemented
+    "allow_fractional_scaling": True,
 }

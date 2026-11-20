@@ -19,8 +19,6 @@ from .models import (
     SPECIAL_FEATURES,
     BoTorchGP,
     MLPModel,
-    MultitaskGPhysModel,
-    MultitaskGPModel,
     PhModel,
 )
 from .plotting import plot_2d_debug
@@ -31,7 +29,8 @@ from .train import (
     train_model_ens,
 )
 
-SUPPORTED_AFs = ["EI", "logEI", "PI", "UCB"]
+SUPPORTED_AFs = ["EI", "logEI", "PI", "UCB", "qEI", "qlogEI", "qPI", "qUCB"]
+SUPPORTED_MODELS = ["GP", "Ph", "MLP", "GP+Ph", "BoTorch-GP", "LLM", "Phmix"]
 
 
 class GDEOptimizer:
@@ -65,22 +64,11 @@ class GDEOptimizer:
         :param output_labels: Custom output labels (default: FE (Eth), FE (CO))
         """
 
-        if model_name == "GP":
-            self.model = MultitaskGPModel
-        elif model_name == "Ph":
-            self.model = PhModel
-        elif model_name == "MLP":
-            self.model = MLPModel
-        elif model_name == "GP+Ph":
-            self.model = MultitaskGPhysModel
-        elif model_name == "BoTorch-GP":
-            self.model = "BoTorch-GP"
-        elif model_name == "LLM":
-            self.model = "LLM"
-        else:
+        if model_name not in SUPPORTED_MODELS:
             raise ValueError(
-                f"Unsupported model_name '{model_name}'. Supported options are 'GP', 'Ph', 'MLP', 'GP+Ph', 'BoTorch-GP', 'LLM'."
+                f"Unsupported model_name '{model_name}'. Supported options are {', '.join(SUPPORTED_MODELS)}."
             )
+        self.model = model_name
 
         if acquisition in SUPPORTED_AFs:
             self.acquisition = acquisition
@@ -218,7 +206,7 @@ class GDEOptimizer:
         if isinstance(new_data, pd.Series):
             new_data = new_data.to_frame().T
 
-        if self.model in {PhModel, MultitaskGPhysModel}:
+        if self.model in {"Ph", "GP+Ph"}:
             for label in MODELED_QUANTITIES:
                 if (
                     label in new_data.columns
@@ -240,12 +228,17 @@ class GDEOptimizer:
                     self.config[label] = self.df[label].unique()[0]
 
 
-    def get_predictor(self) -> Tuple[torch.nn.Module | BoTorchGP, pd.DataFrame]:
+    def get_predictor(self, alt=False) -> Tuple[torch.nn.Module | BoTorchGP, pd.DataFrame]:
         """
         Train and return the new predictor based on the new data.
 
+        :param alt: If True, use alternative model for mix models
+
         :returns: (model, stats) tuple where model is the trained predictor and stats is a DataFrame with training metrics.
         """
+        if alt:
+            print(f"Using alternative model GP+Ph.")
+
         if self.config.get("torch_seed") is not None:
             torch.manual_seed(self.config["torch_seed"])
 
@@ -255,7 +248,7 @@ class GDEOptimizer:
 
         # Special handling for GP and GP+Ph models: these use gpytorch training functions
         # (they are not compatible with the ensemble training pipeline used for MLP/Ph).
-        if self.model == MultitaskGPModel:
+        if self.model == "GP":
 
             # Train GP and return BoTorch-compatible model
             stats, _, model, likelihood = train_GP_model(
@@ -267,7 +260,7 @@ class GDEOptimizer:
                 plot=self.config["make_plots"],
             )
 
-        elif self.model == MultitaskGPhysModel:
+        elif self.model == "GP+Ph" or (self.model == "Phmix" and alt):
             # GP+Physics: Ph model constructor must be provided to the GP+Ph trainer.
 
             ph_model_constructor = lambda: PhModel(
@@ -302,7 +295,7 @@ class GDEOptimizer:
 
         # Handle ensemble models (MLP and Ph)
         else:
-            if self.model == PhModel:
+            if self.model == "Ph" or (self.model == "Phmix" and not alt):
 
                 model_factory = lambda: PhModel(
                     config=self.config,
@@ -314,7 +307,7 @@ class GDEOptimizer:
                     output_labels=self.output_labels,
                 )
 
-            elif self.model == MLPModel:
+            elif self.model == "MLP":
                 # MLP model with explicit input/output sizes
                 n_in = len(self.input_labels)
                 n_out = len(self.output_labels)
@@ -335,10 +328,13 @@ class GDEOptimizer:
                 num_models=self.config.get("num_models", 50),
                 batch_fraction=self.config.get("batch_fraction", 0.5),
                 variance_scaling=self.config.get("variance_scaling", True),
+                out_of_bag_scaling=self.config.get("out_of_bag_scaling", False),
                 per_output_scaling=self.config.get("per_output_scaling", False),
                 lr=self.config.get("lr", 1e-3),
                 tol=self.config.get("tol", 1e-5),
                 early_stopping=self.config.get("early_stopping", False),
+                q=self.config.get("q", 1),
+                allow_fractional_scaling=self.config.get("allow_fractional_scaling", True),
             )
 
         return model, stats
@@ -370,14 +366,12 @@ class GDEOptimizer:
         self,
         new_data: pd.DataFrame,
         bounds: Optional[torch.Tensor] = None,
-        _repeat: int = 0,
     ) -> Tuple[torch.Tensor, pd.Series]:
         """
         Perform a step in the optimization process using the new data and bounds.
 
         :param new_data: New data to be added to the training set. Do not input data that was already given to the object, only new data.
         :param bounds: Optional bounds for the optimization (default: inferred from data)
-        :param _repeat: internal counter tracking retries when the proposed candidate duplicates an existing point
         :returns: tuple of (acquisition_function_value, next_experiment_parameters)
         """
 
@@ -449,38 +443,6 @@ class GDEOptimizer:
             )
         assert raw_bounds.shape[0] == 2, "Bounds should have shape (2, d)"
 
-        try:
-            predictor, stats = self.get_predictor()
-        except torch._C._LinAlgError as error:
-
-            check_random_fallback(
-                self.config,
-                f"Carbon Driver could not fit the optimization model; the training data may be underdetermined (duplicate conditions, too little variation, or too few observations). ({error})",
-            )
-            return None, random_candidate(self.all_input_labels, raw_bounds)
-
-        except RuntimeError as e:
-            # Handle gpytorch ExactGP runtime error when model is called with inputs
-            # that don't exactly match the stored training inputs (raised in debug mode).
-            msg = str(e)
-            if (
-                "You must train on the training inputs" in msg
-                or "train_inputs cannot be None" in msg
-            ):
-
-                check_random_fallback(
-                    self.config,
-                    f"Carbon Driver could not fit the optimization model; the training data may be underdetermined (duplicate conditions, too little variation, or too few observations). ({e})",
-                )
-                return None, random_candidate(self.all_input_labels, raw_bounds)
-
-            else:
-                # Unknown runtime error: re-raise so we don't silently swallow unrelated failures
-                raise
-        self.predictor = predictor
-
-        AF = get_acquisition_function(self, predictor)
-
         # Select the output column index for the quantity by name from the last two columns
 
         try:
@@ -491,82 +453,105 @@ class GDEOptimizer:
             )
         # print(f"[step] optimizing target column index (target_idx): {target_idx} for quantity '{self.quantity}'")
 
-        means, stds = (
-            torch.tensor(
-                self._means[self.input_labels].to_numpy().copy()
-            ),  # Will be 0 if not normalized
-            torch.tensor(
-                self._stds[self.input_labels].to_numpy().copy()
-            ),  # Will be 1 if not normalized
-        )  # feature-only stats
+        self.i += 1
 
-        variable_input_labels_mask = torch.tensor([label in self.input_labels for label in self.all_input_labels])
+        max_repeats = self.config.get("max_attempts", 3)
+        X_pending = None
+        for attempt in range(max_repeats + 1):
 
-        bounds_norm = (raw_bounds[:, variable_input_labels_mask] - means) / stds
+            if attempt == 0 or (attempt == 1 and self.model == "Phmix"):
+                try:
+                    predictor, stats = self.get_predictor(alt=(attempt == 1))
+                except torch._C._LinAlgError as error:
+                    check_random_fallback(
+                        self.config,
+                        f"Carbon Driver could not fit the optimization model; the training data may be underdetermined (duplicate conditions, too little variation, or too few observations). ({error})",
+                    )
+                    return None, random_candidate(self.all_input_labels, raw_bounds)
+                except RuntimeError as e:
+                    # Handle gpytorch ExactGP runtime error when model is called with inputs
+                    # that don't exactly match the stored training inputs (raised in debug mode).
+                    msg = str(e)
+                    if (
+                        "You must train on the training inputs" in msg
+                        or "train_inputs cannot be None" in msg
+                    ):
+                        check_random_fallback(
+                            self.config,
+                            f"Carbon Driver could not fit the optimization model; the training data may be underdetermined (duplicate conditions, too little variation, or too few observations). ({e})",
+                        )
+                        return None, random_candidate(self.all_input_labels, raw_bounds)
+                    else:
+                        # Unknown runtime error: re-raise so we don't silently swallow unrelated failures
+                        raise
 
-        # print(f"[step] normalized bounds min: {bounds_norm[0].tolist()} max: {bounds_norm[1].tolist()}")
-        opt_bounds = bounds_norm.float()
+            if X_pending is None:
+                self.predictor = predictor
 
-        def AF_q(x):
-            return select_acquisition_target(AF(x), target_idx)
+            means, stds = (
+                torch.tensor(
+                    self._means[self.input_labels].to_numpy().copy()
+                ),  # Will be 0 if not normalized
+                torch.tensor(
+                    self._stds[self.input_labels].to_numpy().copy()
+                ),  # Will be 1 if not normalized
+            )  # feature-only stats
+            
+            variable_input_labels_mask = torch.tensor([label in self.input_labels for label in self.all_input_labels])
+            
+            bounds_norm = (raw_bounds[:, variable_input_labels_mask] - means) / stds
+            
+            # print(f"[step] normalized bounds min: {bounds_norm[0].tolist()} max: {bounds_norm[1].tolist()}")
+            opt_bounds = bounds_norm.float()
 
-        next_experiment, _ = optimize_acqf(
-            acq_function=AF_q,
-            bounds=opt_bounds,
-            q=1,
-            num_restarts=self.config.get("num_restarts", 100),
-            raw_samples=self.config.get("raw_samples", 1000),
-            options={"ftol": 1e-12, "factr": None},  # See note on next line
-        )
-        # factr sets the same value as ftol, but needs to be set explicitely
-        # to None when ftol is set (which is weird)
+            AF = get_acquisition_function(self, predictor, X_pending=X_pending)
 
-        # Denormalize the candidate, mean=0 and std=1 if not normalized.
-        x_candidate = next_experiment * stds + means
+            def AF_q(x):
+                return select_acquisition_target(AF(x), target_idx)
 
-        if _repeat == 0:
-            self.i += 1
+            next_experiment, _ = optimize_acqf(
+                acq_function=AF_q,
+                bounds=opt_bounds,
+                q=1 if X_pending is not None else self.config.get("q", 1),
+                num_restarts=self.config.get("num_restarts", 100),
+                raw_samples=self.config.get("raw_samples", 1000),
+                options={"ftol": 1e-12, "factr": None},  # See note on next line
+            )
+            # factr sets the same value as ftol, but needs to be set explicitely
+            # to None when ftol is set (which is weird)
 
-        # Evaluate AF at the (normalized) next point for returning EI value
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message="Output shape checks failed!")
-            ei_val = AF_q(next_experiment)
+            # Denormalize the candidate, mean=0 and std=1 if not normalized.
+            x_candidate = next_experiment * stds + means
 
-        candidate = pd.Series(
-            x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
-        )
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="Output shape checks failed!")
+                ei_val = AF_q(next_experiment)
 
-        if len(self.all_input_labels) > len(self.input_labels):
-            warnings.warn(f"The suggestions for the following input labels are randomly generated, since they were constant: {[label for label, mask in zip(self.all_input_labels, variable_input_labels_mask) if not mask]}")
+            candidate = pd.Series(
+                x_candidate.detach().cpu().numpy().flatten(), index=self.input_labels
+            )
 
-        candidate = pd.concat([candidate, random_candidate([label for label, mask in zip(self.all_input_labels, variable_input_labels_mask) if not mask], raw_bounds[:, ~variable_input_labels_mask])])
+            if len(self.all_input_labels) > len(self.input_labels):
+                warnings.warn(f"The suggestions for the following input labels are randomly generated, since they were constant: {[label for label, mask in zip(self.all_input_labels, variable_input_labels_mask) if not mask]}")
 
-        candidate = candidate[self.all_input_labels]
+            candidate = pd.concat([candidate, random_candidate([label for label, mask in zip(self.all_input_labels, variable_input_labels_mask) if not mask], raw_bounds[:, ~variable_input_labels_mask])])
 
-        # If the candidate duplicates an existing point, feed the matching point(s)
-        # back in as "new" data (data augmentation) and retrain, up to
-        # max_attempts times, then fall back to a random candidate.
-        duplicate_mask = np.isclose(
-            candidate,
-            self.df.loc[:, self.all_input_labels],
-            rtol=self.config.get("similarity_tolerance", 1e-5),
-        ).all(axis=1)
-        if duplicate_mask.any():
+            candidate = candidate[self.all_input_labels]
+
+            duplicate_mask = np.isclose(
+                candidate,
+                self.df.loc[:, self.all_input_labels],
+                rtol=self.config.get("similarity_tolerance", 1e-5),
+            ).all(axis=1)
+            if not duplicate_mask.any():
+                break
             if self.config.get("allow_repeated_experiments", False):
                 warnings.warn(
                     "Candidate duplicates an existing point; returning it as-is "
                     "because allow_repeated_experiments is True."
                 )
-            else:
-                max_repeats = self.config.get("max_attempts", 3)
-                if _repeat < max_repeats:
-                    warnings.warn(
-                        f"Candidate duplicates an existing point (retry {_repeat + 1}/{max_repeats}); "
-                        "augmenting the dataset with the matching point(s) and retraining."
-                    )
-                    return self.step(
-                        self.df.loc[duplicate_mask], bounds=bounds, _repeat=_repeat + 1
-                    )
+                break
+            if attempt == max_repeats:
                 check_random_fallback(
                     self.config,
                     f"Candidate still duplicates an existing point after {max_repeats} retries.",
@@ -575,6 +560,22 @@ class GDEOptimizer:
                 ei_val = self.acquisition_value(candidate.to_frame().T)[
                     "acquisition"
                 ].iloc[0]
+                break
+            if self.model == "Phmix" and attempt == 0:
+                warnings.warn(
+                    f"Candidate duplicates an existing point (retry {attempt + 1}/{max_repeats}); "
+                    "re-optimizing with alternate model (GP+Ph)."
+                )
+                continue
+            warnings.warn(
+                f"Candidate duplicates an existing point (retry {attempt + 1}/{max_repeats}); "
+                "re-optimizing with it marked as a pending (already-queried) point."
+            )
+            X_pending = next_experiment if X_pending is None else torch.cat([X_pending, next_experiment], dim=0)
+
+            if self.config["make_plots"] and len(self.all_input_labels) == 2 and len(self.input_labels) == 2:
+                plot_2d_debug(self, predictor, AF_q, raw_bounds, candidate)
+
 
         if self.config["make_plots"] and len(self.all_input_labels) == 2 and len(self.input_labels) == 2:
             plot_2d_debug(self, predictor, AF_q, raw_bounds, candidate)
@@ -600,7 +601,7 @@ class GDEOptimizer:
 
         X, _ = self._get_data_tensors(data=x)
 
-        posterior = self.predictor.posterior(X)
+        posterior = self.predictor.posterior(X.unsqueeze(1))
         pred_mean = posterior.mean.squeeze(1).detach().numpy()
         pred_std = posterior.variance.sqrt().squeeze(1).detach().numpy()
 
@@ -618,7 +619,6 @@ class GDEOptimizer:
         new_data: pd.DataFrame,
         possible_data: pd.DataFrame,
         return_metrics: bool = False,
-        _repeat: int = 0,
     ) -> Tuple[float, int] | Tuple[float, int, dict]:
         """
         Selects the best next point from a set of candidates (possible_data) considering the new data (new_data) and the existing data (if any).
@@ -626,7 +626,6 @@ class GDEOptimizer:
         :param new_data: New data to be added to the training set. Do not input data that was already given to the object, only new data.
         :param possible_data: DataFrame of candidate points to select from
         :param return_metrics: whether to return training metrics (nll, loss)
-        :param _repeat: internal counter tracking retries when the selected point duplicates an existing point
         :returns: (best_ei_value, best_index) or (best_ei_value, best_index, metrics) if return_metrics=True
         """
 
@@ -682,107 +681,89 @@ class GDEOptimizer:
                 return None, best_df_index, {}
             return None, best_df_index
 
-        try:
-            predictor, stats = self.get_predictor()
-        except torch._C._LinAlgError as error:
-            check_random_fallback(
-                self.config,
-                f"Carbon Driver could not fit the optimization model; the training data may be underdetermined (duplicate conditions, too little variation, or too few observations). ({error})",
-            )
-            random_idx = possible_data.index[
-                int(torch.randint(len(possible_data) - 1, ()))
-            ]
-            return (
-                (torch.nan, random_idx, {})
-                if return_metrics
-                else (torch.nan, random_idx)
-            )
-        except RuntimeError as e:
-            msg = str(e)
-            if (
-                "You must train on the training inputs" in msg
-                or "train_inputs cannot be None" in msg
-                or "cholesky_cpu" in msg
-            ):
-                check_random_fallback(
-                    self.config,
-                    f"Carbon Driver could not fit the optimization model; the training data may be underdetermined (duplicate conditions, too little variation, or too few observations). ({e})",
-                )
-                random_idx = possible_data.index[
-                    int(torch.randint(len(possible_data) - 1, ()))
-                ]
-                return (
-                    (torch.nan, random_idx, {})
-                    if return_metrics
-                    else (torch.nan, random_idx)
-                )
-            else:
-                raise
-
-        self.predictor = predictor
-
-        X, _ = self._get_data_tensors(data=possible_data)
-
-        AF = get_acquisition_function(self, predictor)
-
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message="Output shape checks failed!")
-            scores = AF(X.unsqueeze(1))
-
-        if isinstance(scores, torch.Tensor) and (
-            scores.dim() == 0
-            or (scores.dim() == 1 and scores.shape[0] != len(possible_data))
-        ):
-            scores = scores.unsqueeze(0)
-
-        if _repeat == 0:
-            self.i += 1
+        self.i += 1
 
         target_idx = self.output_labels.index(self.quantity)
 
-        if isinstance(scores, torch.Tensor):
-            if scores.dim() == 1:
-                target_scores = scores  # already one score per candidate
-            else:
-                if scores.shape[1] <= target_idx:
-                    raise RuntimeError(
-                        f"AF scores shape {tuple(scores.shape)} has no column {target_idx}"
-                    )
-                target_scores = scores[:, target_idx]
-        else:
-            raise RuntimeError("AF returned non-tensor scores, expected torch.Tensor")
-        print(f"Target scores :")
-        ts = possible_data.copy()
-        ts["AF Score"] = target_scores.tolist()
-        print(ts)
-        best_idx = int(target_scores.argmax().item())
-        best_df_index = possible_data.iloc[best_idx].name
-        best_ei = float(target_scores[best_idx].item())
+        max_repeats = self.config.get("max_attempts", 3)
+        X_pending = None
+        for attempt in range(max_repeats + 1):
 
-        duplicate_mask = np.isclose(
-            possible_data.loc[best_df_index, self.input_labels].astype(float),
-            self.df.loc[:, self.input_labels].astype(float),
-            rtol=1e-9,
-        ).all(axis=1)
-        if duplicate_mask.any():
+            if attempt == 0 or (attempt == 1 and self.model == "Phmix"):
+
+                try:
+                    predictor, stats = self.get_predictor(alt=(attempt == 1))
+                except torch._C._LinAlgError as error:
+                    check_random_fallback(
+                        self.config,
+                        f"Carbon Driver could not fit the optimization model; the training data may be underdetermined (duplicate conditions, too little variation, or too few observations). ({error})",
+                    )
+                    random_idx = possible_data.index[
+                        int(torch.randint(len(possible_data) - 1, ()))
+                    ]
+                    return (
+                        (torch.nan, random_idx, {})
+                        if return_metrics
+                        else (torch.nan, random_idx)
+                    )
+                except RuntimeError as e:
+                    msg = str(e)
+                    if (
+                        "You must train on the training inputs" in msg
+                        or "train_inputs cannot be None" in msg
+                        or "cholesky_cpu" in msg
+                    ):
+                        check_random_fallback(
+                            self.config,
+                            f"Carbon Driver could not fit the optimization model; the training data may be underdetermined (duplicate conditions, too little variation, or too few observations). ({e})",
+                        )
+                        random_idx = possible_data.index[
+                            int(torch.randint(len(possible_data) - 1, ()))
+                        ]
+                        return (
+                            (torch.nan, random_idx, {})
+                            if return_metrics
+                            else (torch.nan, random_idx)
+                        )
+                    else:
+                        raise
+
+            if attempt == 1:
+                self.predictor = predictor
+
+            X, _ = self._get_data_tensors(data=possible_data)
+                
+            AF = get_acquisition_function(self, predictor, X_pending=X_pending)
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="Output shape checks failed!")
+                scores = AF(X.unsqueeze(1))
+
+            target_scores = select_acquisition_target(scores, target_idx)
+
+            print(f"Target scores :")
+            ts = possible_data.copy()
+            ts["AF Score"] = target_scores.tolist()
+            print(ts)
+            best_idx = int(target_scores.argmax().item())
+            best_df_index = possible_data.iloc[best_idx].name
+            best_ei = float(target_scores[best_idx].item())
+
+            duplicate_mask = np.isclose(
+                possible_data.loc[best_df_index, self.input_labels].astype(float),
+                self.df.loc[:, self.input_labels].astype(float),
+                rtol=1e-9,
+            ).all(axis=1)
+            if not duplicate_mask.any():
+                break
             if self.config.get("allow_repeated_experiments", False):
                 warnings.warn(
                     "Chose a candidate already in the dataset; returning it as-is "
                     "because allow_repeated_experiments is True."
                 )
-            else:
-                max_repeats = self.config.get("max_attempts", 3)
-                if _repeat < max_repeats:
-                    warnings.warn(
-                        f"Chose a candidate already in the dataset (retry {_repeat + 1}/{max_repeats}); "
-                        "augmenting the dataset and retraining."
-                    )
-                    return self.step_within_data(
-                        self.df.loc[duplicate_mask],
-                        possible_data,
-                        return_metrics=return_metrics,
-                        _repeat=_repeat + 1,
-                    )
+                break
+
+            if attempt == max_repeats:
                 check_random_fallback(
                     self.config,
                     f"Still chose a candidate already in the dataset after {max_repeats} retries.",
@@ -795,6 +776,18 @@ class GDEOptimizer:
                     if return_metrics
                     else (random_ei, random_idx)
                 )
+            if self.model == "Phmix" and attempt == 0:
+                warnings.warn(
+                f"Chose a candidate already in the dataset (retry {attempt + 1}/{max_repeats}); "
+                "re-scoring with alternate model (GP+Ph)."
+            )
+                continue
+            warnings.warn(
+                f"Chose a candidate already in the dataset (retry {attempt + 1}/{max_repeats}); "
+                "re-scoring with it marked as a pending (already-queried) point."
+            )
+            pending_x = X[best_idx : best_idx + 1]
+            X_pending = pending_x if X_pending is None else torch.cat([X_pending, pending_x], dim=0)
 
         if self.config["make_plots"] and len(self.input_labels) == 2:
             all_points = pd.concat(

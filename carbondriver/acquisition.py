@@ -8,23 +8,48 @@ from botorch.acquisition.analytic import (
     ProbabilityOfImprovement,
     UpperConfidenceBound,
 )
-from botorch.acquisition.objective import ScalarizedPosteriorTransform
+from botorch.acquisition.logei import qLogExpectedImprovement
+from botorch.acquisition.monte_carlo import (
+    qExpectedImprovement,
+    qProbabilityOfImprovement,
+    qUpperConfidenceBound,
+)
+from botorch.acquisition.objective import GenericMCObjective, ScalarizedPosteriorTransform
 from botorch.models.multitask import MultiTaskGP
+from botorch.sampling.index_sampler import IndexSampler
+from botorch.sampling.normal import SobolQMCNormalSampler
 
-from .models import BoTorchGP
+from .models import BoTorchGP, EnsPredictor
+
+MC_EQUIVALENCE = {
+    "EI": qExpectedImprovement,
+    "logEI": qLogExpectedImprovement,
+    "PI": qProbabilityOfImprovement,
+    "UCB": qUpperConfidenceBound,
+}
+
+ACQF_NAME = {
+    "EI": ExpectedImprovement,
+    "logEI": LogExpectedImprovement,
+    "PI": ProbabilityOfImprovement,
+    "UCB": UpperConfidenceBound,
+    "qEI": qExpectedImprovement,
+    "qlogEI": qLogExpectedImprovement,
+    "qPI": qProbabilityOfImprovement,
+    "qUCB": qUpperConfidenceBound,
+}
 
 
-def get_acquisition_function(
-    opt, predictor: torch.nn.Module
-) -> ExpectedImprovement | LogExpectedImprovement | ProbabilityOfImprovement:
+def get_acquisition_function(opt, predictor: torch.nn.Module, X_pending: torch.Tensor | None = None):
     """
     Get the acquisition function based on the specified acquisition type.
 
     :param opt: GDEOptimizer instance
     :param predictor: trained model for predictions
-    :returns: BoTorch acquisition function (EI, logEI, or PI)
-
-    Note: The acquisition function is in normalized space if normalization is enabled, so the expected improvement is not the actual value for example. Also normalizing here just for consistency because y is not actually normalized.
+    :param X_pending: points already committed to being observed (e.g. duplicates
+        of existing data chosen earlier in a retry loop). If given, switches to
+        the Monte-Carlo (q-batch) counterpart of the acquisition function.
+    :returns: BoTorch acquisition function (EI, logEI, PI, UCB, or their q-batch counterparts)
     """
 
     _, y = opt._get_data_tensors()
@@ -46,38 +71,35 @@ def get_acquisition_function(
             f"Unsupported EI_reference {opt.config['EI_reference']}, expected 'max' or 'min'"
         )
 
-    if opt.acquisition == "EI":
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            return ExpectedImprovement(
-                predictor,
-                best_f=best_f,
-                maximize=opt.maximize,
-                posterior_transform=posterior_transform,
-            )
-    if opt.acquisition == "logEI":
-        return LogExpectedImprovement(
-            predictor,
-            best_f=best_f,
-            maximize=opt.maximize,
-            posterior_transform=posterior_transform,
-        )
-    if opt.acquisition == "PI":
-        return ProbabilityOfImprovement(
-            predictor,
-            best_f=best_f,
-            maximize=opt.maximize,
-            posterior_transform=posterior_transform,
-        )
-    if opt.acquisition == "UCB":
-        beta = opt.config.get("UCB_beta", 1.0)
-        return UpperConfidenceBound(
-            predictor,
-            beta=beta,
-            maximize=opt.maximize,
-            posterior_transform=posterior_transform,
-        )
-    raise ValueError(f"Unsupported acquisition function: {opt.acquisition}")
+    if opt.acquisition in MC_EQUIVALENCE:
+        if X_pending is None:
+            kwargs = dict(maximize=opt.maximize)
+            if opt.acquisition == "UCB":
+                kwargs["beta"] = opt.config.get("UCB_beta", 1.0)
+            else:
+                kwargs["best_f"] = best_f
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")  # ExpectedImprovement's deprecation warning
+                return ACQF_NAME[opt.acquisition](predictor, posterior_transform=posterior_transform, **kwargs)
+        acqf = MC_EQUIVALENCE[opt.acquisition]
+    else:
+        acqf = ACQF_NAME[opt.acquisition]
+
+    # The q-batch classes have no `maximize` flag
+    sign = 1.0 if opt.maximize else -1.0
+    objective = GenericMCObjective(lambda samples, X=None: sign * samples.squeeze(-1))
+    objective._is_mo = len(opt.output_labels) > 1 and isinstance(predictor, EnsPredictor) # A bit hacky, but sets the objective to multi-output. Real solution is a generic posteriror transform that applies to ensemble and num_ouptut > 1.
+    # EnsemblePosterior needs IndexSampler (sampling over ensemble members);
+    # GP-based posteriors need SobolQMCNormalSampler (reparameterized Gaussian samples).
+    sampler_cls = IndexSampler if isinstance(predictor, EnsPredictor) else SobolQMCNormalSampler
+    sampler = sampler_cls(sample_shape=torch.Size([opt.config.get("mc_samples", 256)]))
+    kwargs = dict(
+        sampler=sampler, objective=objective, posterior_transform=posterior_transform, X_pending=X_pending
+    )
+    kwargs["beta" if "UCB" in opt.acquisition else "best_f"] = (
+        opt.config.get("UCB_beta", 1.0) if opt.acquisition == "UCB" else sign * best_f
+    )
+    return acqf(predictor, **kwargs)
 
 
 def select_acquisition_target(vals: torch.Tensor, target_idx: int) -> torch.Tensor:

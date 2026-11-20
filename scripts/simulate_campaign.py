@@ -32,7 +32,7 @@ from carbondriver.loaders import (
     load_campaign_data,
 )
 
-eps = 1e-3  # small value to avoid extrapolation in the corners
+eps = 20  # small value to avoid extrapolation in the corners
 
 DEFAULT_ELECTRODE_AREA_CM2 = 4
 
@@ -101,22 +101,24 @@ if __name__ == "__main__":
         lab_simulator = LinearNDInterpolator(xy, z)
         
         # Just plotting the interpolation surface
-        X = np.linspace(bounds[0, 0], bounds[1, 0])
-        Y = np.linspace(bounds[0, 1], bounds[1, 1])
+        X = np.linspace(bounds[0, 0], bounds[1, 0], 300)
+        Y = np.linspace(bounds[0, 1], bounds[1, 1], 300)
         
         X, Y = np.meshgrid(X, Y)  # 2D grid for interpolation
         Z = lab_simulator(X, Y)
-        
-        plt.pcolormesh(X, Y, Z, shading="auto")
-        plt.plot(
+
+        ax = plt.axes(projection='3d')
+        ax.plot_surface(X, Y, Z, cmap='viridis', edgecolor='none')
+        ax.scatter(
             df_triplet_means.loc[:, input_labels[0]].to_numpy(),
             df_triplet_means.loc[:, input_labels[1]].to_numpy(),
+            df_triplet_means.loc[:, property_name].to_numpy(),
             "ok",
             label="input point",
         )
+        ax.set_zlim(0, 1)
         plt.legend()
-        plt.colorbar()
-        plt.axis("equal")
+        # plt.axis("equal")
         plt.show()
 
     # Simulated campaign

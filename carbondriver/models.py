@@ -151,7 +151,7 @@ class PhModel(torch.nn.Module):
             extra_sink=config.get("extra_sink", None) if config else None,
             constant_J_in=config.get("constant_J_in", None) if config else None,
         )
-        self.softmax = torch.nn.Softmax(dim=1)
+        self.softmax = torch.nn.Softmax(dim=-1)
         self.n_inputs = int(n_inputs)
         self.config = config or {"normalize_inputs": False}
         self._forward_counter = 0
@@ -160,13 +160,17 @@ class PhModel(torch.nn.Module):
         """
         Predict Faradaic efficiency for given experimental parameters.
 
-        :param x: input features of shape (batch, n_inputs)
-        :returns: predicted FE values of shape (batch, len(output_labels)). Physics outputs, in order, per PHYSICS_OUTPUTS
+        :param x: input features of shape (..., n_inputs), any number of leading batch dims
+        :returns: predicted FE values of shape (..., len(output_labels)). Physics outputs, in order, per PHYSICS_OUTPUTS
         """
         if x.shape[-1] != self.n_inputs:
             raise ValueError(
                 f"Expected {self.n_inputs} input features, got {x.shape[-1]}"
             )
+        # gde_multi's solver only supports a single batch dim, so flatten any
+        # extra leading dims (e.g. BoTorch's q-batch dim) and restore them after.
+        batch_shape = x.shape[:-1]
+        x = x.reshape(-1, self.n_inputs)
         # increment and print persistent forward counter
         self._forward_counter += 1
         latents = self.net(x)
@@ -228,10 +232,11 @@ class PhModel(torch.nn.Module):
             t_CO2=t_CO2,
         )
 
-        return torch.cat(
+        out = torch.cat(
             [solution[MODELED_QUANTITIES[label]] for label in self.output_labels],
             dim=-1,
         )
+        return out.reshape(*batch_shape, out.shape[-1])
 
 
 class MLPModel(torch.nn.Module):
@@ -278,29 +283,10 @@ class EnsPredictor(EnsembleModel):
         self.model_input = model_input
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
-        # Expect X of shape (batch, q, d). We handle q=1 by squeezing.
-        if X.dim() == 3 and X.shape[1] == 1:
-            X_in = X.squeeze(1)  # (batch, d)
-        elif X.dim() == 2:
-            X_in = X  # already (batch, d)
-        else:
-            # Attempt to reshape conservatively: collapse all but last dim into batch
-            X_in = X.view(-1, X.shape[-1])
-
-        model_output = self.model_input(X_in)
-
-        # Handle different output dimensions
-        if model_output.dim() == 3:
-            # Output is [ensemble, batch, features] -> [batch, ensemble, features]
-            result = model_output.permute((1, 0, 2)).unsqueeze(2)
-        elif model_output.dim() == 4:
-            # Output is [ensemble, batch, features, extra] -> [batch, ensemble, features, extra]
-            result = model_output.permute((2, 0, 1, 3))
-        else:
-            # Fallback: return as is
-            result = model_output
-
-        return result
+        # X: (batch, q, d). model_input vmaps over the ensemble dim without
+        # touching X, so it returns (ensemble, batch, q, m); EnsembleModel
+        # expects (batch, ensemble, q, m).
+        return self.model_input(X).movedim(0, 1)
 
 
 class BoTorchGP(GPyTorchModel):
@@ -321,11 +307,7 @@ class BoTorchGP(GPyTorchModel):
         self._num_outputs = 1
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.dim() == 3 and x.shape[1] == 1:
-            X_in = x.squeeze(1)  # (batch, d)
-        elif x.dim() == 2:
-            X_in = x  # already (batch, d)
-        return self.model(X_in)
+        return self.model(x)
 
 
 class MultitaskGPModel(gpytorch.models.ExactGP):

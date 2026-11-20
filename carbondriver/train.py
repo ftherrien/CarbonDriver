@@ -23,24 +23,38 @@ from carbondriver.models import (
 )
 
 
-def get_cov(batch: torch.Tensor, keep_dims: bool = False) -> torch.Tensor:
+def _nanvar(x: torch.Tensor, dim: int = 0) -> torch.Tensor:
+    """Unbiased variance along `dim`, ignoring NaNs (treated as missing samples)."""
+    n = (~x.isnan()).sum(dim=dim)
+    mean = x.nanmean(dim=dim, keepdim=True)
+    return (x - mean).square().nanmean(dim=dim) * n / (n - 1)
+
+
+def get_cov(batch: torch.Tensor, keep_dims: bool = False, iid: bool = False) -> torch.Tensor:
     """Compute batch covariance with regularization.
 
-    :param batch: tensor of samples, shape (num_samples, num_data, num_tasks)
+    :param batch: tensor of samples, shape (num_samples, num_data, num_tasks).
+        May contain NaNs for samples to exclude (e.g. in-bag ensemble members
+        when calibrating out-of-bag); only supported when iid=True, since the
+        full (non-diagonal) covariance has no simple NaN-aware equivalent.
     :param keep_dims: if True, return one covariance matrix per task instead of
         flattening data and tasks together
+    :param iid: if True, zero out cross-point/cross-task correlations (iid
+        assumption, used for q=1 calibration) instead of the full empirical
+        covariance
     :returns: covariance matrix, or (num_tasks, num_data, num_data) if keep_dims
     """
     if keep_dims:
-        return torch.stack(
-            [
-                torch.cov(batch[..., j].transpose(-1, -2))
-                + 1e-6 * torch.eye(batch.shape[-2])
-                for j in range(batch.shape[-1])
-            ]
-        )
-    batch = batch.reshape(*batch.shape[:-2], -1)
-    return torch.cov(batch.transpose(-1, -2)) + 1e-6 * torch.eye(batch.shape[1])
+        covs = [
+            torch.diag(_nanvar(batch[..., j]))
+            if iid
+            else torch.cov(batch[..., j].transpose(-1, -2))
+            for j in range(batch.shape[-1])
+        ]
+        return torch.stack([c + 1e-6 * torch.eye(batch.shape[-2]) for c in covs])
+    flat = batch.reshape(*batch.shape[:-2], -1)
+    cov = torch.diag(_nanvar(flat)) if iid else torch.cov(flat.transpose(-1, -2))
+    return cov + 1e-6 * torch.eye(flat.shape[1])
 
 
 def get_nll(
@@ -61,6 +75,7 @@ def get_nll_samples(
     samples: torch.Tensor,
     targets: torch.Tensor,
     keep_dims: bool = False,
+    iid: bool = False,
 ) -> torch.Tensor:
     """Compute NLL from samples, optionally scaling diagonal covariance.
     Assumes samples are of shape (num_samples, num_data, num_tasks) and targets are of shape (num_data, num_tasks).
@@ -69,10 +84,11 @@ def get_nll_samples(
     :param targets: target values
     :param keep_dims: if True, return one NLL per task instead of a single
         NLL over the flattened data and tasks
+    :param iid: if True, treat points/tasks as independent (see get_cov)
     :returns: NLL scalar, or tensor of shape (num_tasks,) if keep_dims
     """
-    mean = samples.mean(dim=0)
-    covariance = get_cov(samples, keep_dims=keep_dims)
+    mean = samples.nanmean(dim=0)
+    covariance = get_cov(samples, keep_dims=keep_dims, iid=iid)
     if keep_dims:
         return torch.stack(
             [
@@ -95,6 +111,7 @@ def get_mean_shift(
     samples: torch.Tensor,
     targets: torch.Tensor,
     keep_dims: bool = False,
+    iid: bool = False,
 ) -> torch.Tensor:
     """Compute the mean shift to optimize NLL.
     Assumes samples are of shape (num_samples, num_data, num_tasks) and targets are of shape (num_data, num_tasks).
@@ -103,11 +120,12 @@ def get_mean_shift(
     :param targets: target values
     :param keep_dims: if True, return one shift per task instead of a single
         shift over the flattened data and tasks
+    :param iid: if True, treat points/tasks as independent (see get_cov)
     :returns: optimal shift, or tensor of shape (num_tasks,) if keep_dims
     """
     if keep_dims:
-        mean = samples.mean(dim=0)
-        covariance = get_cov(samples, keep_dims=True)
+        mean = samples.nanmean(dim=0)
+        covariance = get_cov(samples, keep_dims=True, iid=iid)
         shifts = []
         for j in range(samples.shape[-1]):
             t = targets[..., j].reshape(-1, 1)
@@ -118,8 +136,8 @@ def get_mean_shift(
         return torch.stack(shifts)
 
     targets = targets.reshape(-1, 1)
-    mean = samples.reshape(samples.shape[0], -1, 1).mean(dim=0)
-    covariance = get_cov(samples)
+    mean = samples.reshape(samples.shape[0], -1, 1).nanmean(dim=0)
+    covariance = get_cov(samples, iid=iid)
 
     B = 0.5 * ((targets - mean).T + (targets - mean)) * torch.linalg.inv(covariance)
 
@@ -140,8 +158,11 @@ def train_model_ens(
     tol: float = 1e-5,
     batch_fraction: float = 0.5,
     variance_scaling: bool = True,
+    out_of_bag_scaling: bool = False,
     per_output_scaling: bool = False,
     early_stopping: bool = False,
+    q: int = 1,
+    allow_fractional_scaling: bool = True,
 ) -> Tuple[pd.DataFrame, EnsPredictor]:
     """Train 50-model ensemble with per-model bagging and variance scaling.
 
@@ -157,8 +178,20 @@ def train_model_ens(
     :param lr: learning rate for optimizer
     :param tol: relative tolerance for early stopping
     :param batch_fraction: Fraction of training data to use for each model
-    :param variance_scaling: whether to apply variance scaling to ensemble predictions
+    :param variance_scaling: whether to rescale predicted variance to better
+        calibrate NLL (default True)
+    :param out_of_bag_scaling: if True, calibrate variance_scaling against each
+        point's out-of-bag prediction (only models that did not train on it) to
+        avoid overfitting the scaler; if False (default), calibrate in-sample
+        against each point's full-ensemble prediction
     :param per_output_scaling: whether to scale variance per output dimension (default False)
+    :param q: acquisition batch size the variance scaling is calibrated for. Only
+        q=1 (iid NLL) is implemented; q>1 would require calibrating against the
+        joint NLL over batches of size q instead.
+    :param allow_fractional_scaling: if True (default, matches legacy behavior),
+        variance_scaler may shrink below 1; if False, clamp variance_scaler to
+        be at least 1, to prevent the ensemble from calibrating itself to be more
+        confident than its raw (in-sample) spread suggests
     :returns: tuple of (stats_df, ensemble_predictor)
     """
 
@@ -236,17 +269,44 @@ def train_model_ens(
     std_train = fe_train.std(dim=0)
 
     if variance_scaling:
-        mean_shift = get_mean_shift(fe_train, y_train, keep_dims=per_output_scaling)
+        if q == 1:
+            if out_of_bag_scaling:
+                # Out-of-bag (OOB) calibration: mask each model's in-bag points
+                # with NaN so get_mean_shift/get_nll_samples's nan-aware
+                # reductions only use models that did NOT train on that point.
+                in_bag = torch.zeros(num_models, X_train.shape[0], dtype=torch.bool).scatter_(1, inds, True)
+                valid = (~in_bag).sum(dim=0) >= 2  # need >=2 OOB predictions for a variance
+                if not valid.any():
+                    raise ValueError(
+                        "No training point has enough out-of-bag models (>=2) to "
+                        "calibrate out_of_bag_scaling; this is likely because "
+                        "batch_fraction is too high or num_models too low."
+                    )
+                fe_cal = fe_train.masked_fill(in_bag.unsqueeze(-1), torch.nan)[:, valid]
+                y_cal = y_train[valid]
+            else:
+                fe_cal, y_cal = fe_train, y_train
 
-        # Analytical best scaler to minimize NLL, one per output dimension
-        variance_scaler = 2 * (
-            get_nll_samples(fe_train + mean_shift, y_train, keep_dims=per_output_scaling)
-            - get_nll_samples(
-                fe_train + mean_shift,
-                fe_train.mean(dim=0) + mean_shift,
-                keep_dims=per_output_scaling,
+            mean_shift = get_mean_shift(fe_cal, y_cal, keep_dims=per_output_scaling, iid=True)
+
+            # Analytical best scaler to minimize NLL, one per output dimension
+            variance_scaler = 2 * (
+                get_nll_samples(fe_cal + mean_shift, y_cal, keep_dims=per_output_scaling, iid=True)
+                - get_nll_samples(
+                    fe_cal + mean_shift,
+                    fe_cal.nanmean(dim=0) + mean_shift,
+                    keep_dims=per_output_scaling,
+                    iid=True,
+                )
             )
-        )
+
+            if not allow_fractional_scaling:
+                variance_scaler = variance_scaler.clamp(min=1.0)
+        else:
+            raise NotImplementedError(
+                "Variance scaling is only calibrated for q=1 (iid NLL); "
+                "q>1 would require calibrating against the joint NLL over batches."
+            )
 
     else:
         mean_shift = torch.tensor(0.0)
