@@ -388,7 +388,7 @@ def process_runs_mean(dirname):
     return (pd.concat(all_df, axis=0) if all_df else pd.DataFrame()), config
 
 
-def create_random_baseline(n_runs, property_name, with_replacement=False, max_steps=50):
+def create_random_baseline(n_runs, property_name, with_replacement=False, max_steps=200):
     """Create baseline runs"""
 
     all_df = []
@@ -631,6 +631,8 @@ if __name__ == "__main__":
                     if sf.mean() > 0
                     else np.inf
                 )
+                # Note: with replacement the formula is 1/p * (1-p)^3 so the random baseline is different. Leaving it as is to compare to a stronger baseline: someone using random would know not to pick the same experiments, but models should figure it out.
+                
                 stats[combo_name] = {
                     "Mean Steps": sf.mean(),
                     "Std Steps": sf.std(),
