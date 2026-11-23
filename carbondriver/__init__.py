@@ -485,7 +485,7 @@ class GDEOptimizer:
                         # Unknown runtime error: re-raise so we don't silently swallow unrelated failures
                         raise
 
-            if X_pending is None:
+            if attempt == 0:
                 self.predictor = predictor
 
             means, stds = (
@@ -728,7 +728,7 @@ class GDEOptimizer:
                     else:
                         raise
 
-            if attempt == 1:
+            if attempt == 0:
                 self.predictor = predictor
 
             X, _ = self._get_data_tensors(data=possible_data)
